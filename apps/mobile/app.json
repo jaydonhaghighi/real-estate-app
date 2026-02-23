@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Messaging MVP",
+    "slug": "messaging-mvp",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "messagingmvp",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#F5F2E8"
+      }
+    },
+    "plugins": ["expo-router"]
+  }
+}

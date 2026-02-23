@@ -1,0 +1,77 @@
+import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common';
+import { Response } from 'express';
+import { z } from 'zod';
+
+import { CurrentUser } from '../../common/auth/current-user.decorator';
+import { Public } from '../../common/auth/public.decorator';
+import { UserContext } from '../../common/auth/user-context';
+import { MailboxesService } from './mailboxes.service';
+
+const oauthStartSchema = z.object({
+  app_redirect_uri: z.string().url().optional(),
+  login_hint: z.string().email().optional()
+});
+
+const oauthCallbackSchema = z.object({
+  code: z.string().min(1).optional(),
+  state: z.string().min(1).optional(),
+  email_address: z.string().email().optional(),
+  mailbox_type: z.enum(['primary', 'shared', 'delegated']).optional(),
+  delegated_from: z.string().email().optional()
+});
+
+@Controller('mailboxes')
+export class MailboxesController {
+  constructor(private readonly mailboxesService: MailboxesService) {}
+
+  @Get()
+  async list(@CurrentUser() user: UserContext): Promise<Record<string, unknown>[]> {
+    return this.mailboxesService.list(user);
+  }
+
+  @Post('oauth/:provider/start')
+  async oauthStart(
+    @CurrentUser() user: UserContext,
+    @Param('provider') provider: 'gmail' | 'outlook',
+    @Body() body: unknown
+  ): Promise<{ url: string; state: string }> {
+    const payload = oauthStartSchema.parse(body ?? {});
+    return this.mailboxesService.createOauthStartUrl(provider, user, payload);
+  }
+
+  @Public()
+  @Get('oauth/:provider/callback')
+  async oauthCallback(
+    @Param('provider') provider: 'gmail' | 'outlook',
+    @Res() response: Response,
+    @Query('code') code?: string,
+    @Query('state') state?: string,
+    @Query('email_address') email_address?: string,
+    @Query('mailbox_type') mailbox_type?: string,
+    @Query('delegated_from') delegated_from?: string
+  ): Promise<void> {
+    const payload = oauthCallbackSchema.parse({
+      code,
+      state,
+      email_address,
+      mailbox_type,
+      delegated_from
+    });
+
+    const result = await this.mailboxesService.oauthCallback(provider, payload);
+    if (result.redirect_url) {
+      response.redirect(302, result.redirect_url);
+      return;
+    }
+
+    response.status(200).json({
+      connected: result.connected,
+      mailbox_connection_id: result.mailbox_connection_id
+    });
+  }
+
+  @Post(':id/backfill')
+  async backfill(@CurrentUser() user: UserContext, @Param('id') mailboxId: string): Promise<{ queued: true; mailbox_id: string }> {
+    return this.mailboxesService.enqueueBackfill(user, mailboxId);
+  }
+}
