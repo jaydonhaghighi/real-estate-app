@@ -9,7 +9,12 @@ import { QueueBootstrapService } from './services/queue-bootstrap.service';
 import { StaleEvaluatorService } from './services/stale-evaluator.service';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true })],
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: ['.env.local', '.env', '../../.env.local', '../../.env']
+    })
+  ],
   providers: [
     DatabaseService,
     StaleEvaluatorService,

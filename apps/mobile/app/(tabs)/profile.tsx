@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Link } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Card } from '../../components/card';
 import { spacing } from '../../lib/theme';
@@ -18,11 +19,12 @@ export default function ProfileScreen(): JSX.Element {
   const styles = useMemo(() => createStyles(colors), [colors]);
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.hero}>
-        <Text style={styles.heroTitle}>Profile</Text>
-        <Text style={styles.heroSubtitle}>Preferences, shortcuts, and communication tools.</Text>
-      </View>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.container}>
+        <View style={styles.hero}>
+          <Text style={styles.heroTitle}>Profile</Text>
+          <Text style={styles.heroSubtitle}>Preferences, shortcuts, and communication tools.</Text>
+        </View>
 
       <Card tone={mode}>
         <Text style={styles.sectionTitle}>Appearance</Text>
@@ -82,18 +84,24 @@ export default function ProfileScreen(): JSX.Element {
         </View>
       </Card>
 
-      <Link href="/mailboxes" style={styles.cta}>
-        <Text style={styles.ctaText}>Sync Mailboxes</Text>
-      </Link>
-    </ScrollView>
+        <Link href="/mailboxes" style={styles.cta}>
+          <Text style={styles.ctaText}>Sync Mailboxes</Text>
+        </Link>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 function createStyles(colors: TabThemeColors) {
   return StyleSheet.create({
     container: {
-      padding: spacing.lg,
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
       paddingBottom: 120
+    },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background
     },
     hero: {
       marginBottom: spacing.md

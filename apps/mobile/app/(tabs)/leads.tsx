@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'expo-router';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Card } from '../../components/card';
 import { apiGet } from '../../lib/api';
@@ -69,9 +70,10 @@ export default function LeadsScreen(): JSX.Element {
   }, [leads, search]);
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Leads</Text>
-      <Text style={styles.subtitle}>Unified lead list with quick access into timeline context.</Text>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.container}>
+        <Text style={styles.title}>Leads</Text>
+        <Text style={styles.subtitle}>Unified lead list with quick access into timeline context.</Text>
 
       <View style={styles.searchWrap}>
         <TextInput
@@ -108,23 +110,29 @@ export default function LeadsScreen(): JSX.Element {
 
       {!tasks.isLoading && filtered.length === 0 ? <Text style={styles.empty}>No leads match your search.</Text> : null}
 
-      <View style={styles.footerActions}>
-        <Link href="/templates" style={styles.footerLink}>
-          Templates
-        </Link>
-        <Link href="/rescue" style={styles.footerLink}>
-          Rescue Queue
-        </Link>
-      </View>
-    </ScrollView>
+        <View style={styles.footerActions}>
+          <Link href="/templates" style={styles.footerLink}>
+            Templates
+          </Link>
+          <Link href="/rescue" style={styles.footerLink}>
+            Rescue Queue
+          </Link>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 function createStyles(colors: TabThemeColors) {
   return StyleSheet.create({
     container: {
-      padding: spacing.lg,
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
       paddingBottom: 120
+    },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background
     },
     title: {
       color: colors.text,

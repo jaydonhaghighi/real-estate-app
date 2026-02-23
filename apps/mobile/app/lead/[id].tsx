@@ -1,9 +1,9 @@
-import { useLocalSearchParams, Link } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 
-import { Card } from '../../components/card';
 import { apiGet } from '../../lib/api';
 import { spacing } from '../../lib/theme';
 import { TabThemeColors, useTabTheme } from '../../lib/tab-theme';
@@ -28,86 +28,129 @@ interface EventMetadata {
   created_at: string;
 }
 
-interface KeyValueRow {
-  label: string;
-  value: string;
-}
-
 function normalizeParam(value: string | string[] | undefined): string | undefined {
-  if (Array.isArray(value)) {
-    return value[0];
-  }
-  return value;
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function formatDateTime(value: string | null | undefined): string {
-  if (!value) {
-    return 'Not set';
-  }
+  if (!value) return 'Not set';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return 'Not set';
+  return (
+    d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
+    ' \u00B7 ' +
+    d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  );
+}
 
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return 'Not set';
-  }
-
-  return parsed.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit'
-  });
+function relativeTime(value: string | null | undefined): string {
+  if (!value) return 'Unknown';
+  const diff = Date.now() - new Date(value).getTime();
+  if (diff < 0) return 'Just now';
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs > 1 ? 's' : ''} ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days > 1 ? 's' : ''} ago`;
 }
 
 function humanizeToken(value: string | undefined): string {
-  if (!value) {
-    return 'Unknown';
-  }
-
+  if (!value) return 'Unknown';
   return value
     .replace(/[_-]/g, ' ')
     .split(' ')
-    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .map((t) => t.charAt(0).toUpperCase() + t.slice(1))
+    .join(' ');
+}
+
+function nameFromEmail(email: string): string {
+  const local = email.split('@')[0] ?? email;
+  return local
+    .replace(/[._+]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(' ');
 }
 
 function getStateColor(colors: TabThemeColors, state: string): string {
-  if (state === 'Active') {
-    return colors.accent;
-  }
-  if (state === 'At-Risk') {
-    return colors.warning;
-  }
-  if (state === 'Stale') {
-    return '#FF7A7A';
-  }
+  if (state === 'Active') return colors.accent;
+  if (state === 'At-Risk') return colors.warning;
+  if (state === 'Stale') return '#FF7A7A';
   return colors.primary;
 }
 
-function extractLeadHighlights(fields: Record<string, unknown> | undefined): KeyValueRow[] {
-  if (!fields || typeof fields !== 'object') {
-    return [];
-  }
+type FeatherName = React.ComponentProps<typeof Feather>['name'];
 
+const FIELD_ICONS: Record<string, FeatherName> = {
+  budget: 'dollar-sign',
+  price: 'dollar-sign',
+  price_range: 'dollar-sign',
+  area: 'map-pin',
+  location: 'map-pin',
+  neighborhood: 'map-pin',
+  bedrooms: 'home',
+  beds: 'home',
+  rooms: 'home',
+  timeline: 'calendar',
+  timeframe: 'calendar',
+  move_date: 'calendar',
+  move_in: 'calendar',
+};
+
+function getFieldIcon(key: string): FeatherName {
+  const lower = key.toLowerCase();
+  for (const [k, v] of Object.entries(FIELD_ICONS)) {
+    if (lower.includes(k)) return v;
+  }
+  return 'info';
+}
+
+interface FieldItem {
+  key: string;
+  label: string;
+  value: string;
+  icon: FeatherName;
+}
+
+function extractFields(fields: Record<string, unknown> | undefined): FieldItem[] {
+  if (!fields || typeof fields !== 'object') return [];
   return Object.entries(fields)
     .slice(0, 4)
-    .map(([key, value]) => {
-      const label = humanizeToken(key);
-      const formattedValue =
+    .map(([key, value]) => ({
+      key,
+      label: humanizeToken(key).toUpperCase(),
+      value:
         typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
           ? String(value)
           : Array.isArray(value)
-            ? `${value.length} values`
-            : value && typeof value === 'object'
-              ? 'Structured'
-              : 'Unavailable';
-
-      return { label, value: formattedValue };
-    });
+            ? value.join(', ')
+            : '\u2014',
+      icon: getFieldIcon(key),
+    }));
 }
+
+const CHANNEL_LABEL: Record<string, string> = {
+  email: 'Email',
+  sms: 'SMS',
+  call: 'Call',
+  note: 'Note',
+  system: 'System',
+};
+
+const CHANNEL_ICON: Record<string, FeatherName> = {
+  email: 'mail',
+  sms: 'message-square',
+  call: 'phone',
+  note: 'edit-3',
+  system: 'settings',
+};
 
 export default function LeadScreen(): JSX.Element {
   const { colors, mode } = useTabTheme();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const s = useMemo(() => createStyles(colors, mode), [colors, mode]);
+  const router = useRouter();
 
   const params = useLocalSearchParams<{
     id: string;
@@ -128,367 +171,394 @@ export default function LeadScreen(): JSX.Element {
   const derived = useQuery({
     queryKey: ['lead', leadId, 'derived'],
     queryFn: () => apiGet<LeadDerivedProfile>(`/leads/${leadId}/derived`),
-    enabled: Boolean(leadId)
+    enabled: Boolean(leadId),
   });
 
   const metadata = useQuery({
     queryKey: ['lead', leadId, 'metadata'],
     queryFn: () => apiGet<EventMetadata[]>(`/leads/${leadId}/events/metadata`),
-    enabled: Boolean(leadId)
+    enabled: Boolean(leadId),
   });
 
   const displayState = derived.data?.state ?? routeLeadState ?? 'Unknown';
-  const summaryText = derived.data?.summary ?? 'No summary generated yet.';
-  const leadHeadline = primaryEmail ?? primaryPhone ?? 'Client Lead';
   const stateColor = getStateColor(colors, displayState);
-  const timelineEvents = metadata.data?.slice(0, 8) ?? [];
-  const eventCount = metadata.data?.length ?? 0;
-  const lastActivity = timelineEvents[0]?.created_at;
-  const leadLoadError = derived.error instanceof Error ? derived.error.message : null;
-  const metadataLoadError = metadata.error instanceof Error ? metadata.error.message : null;
-  const highlightRows = extractLeadHighlights(derived.data?.fields_json);
+  const summaryText = derived.data?.summary ?? 'No summary generated yet.';
+  const fields = extractFields(derived.data?.fields_json);
+  const lastTouchRel = relativeTime(derived.data?.last_touch_at);
+  const nextActionText = routeTaskType
+    ? humanizeToken(routeTaskType) + (routeDueAt ? ` \u00B7 Due ${formatDateTime(routeDueAt)}` : '')
+    : derived.data?.next_action_at
+      ? `Follow up \u00B7 ${formatDateTime(derived.data.next_action_at)}`
+      : null;
+  const timelineEvents = metadata.data?.slice(0, 12) ?? [];
+
   const composeHref = leadId
     ? { pathname: '/compose' as const, params: { lead_id: leadId } }
     : '/compose';
 
+  const leadLoadError = derived.error instanceof Error ? derived.error.message : null;
+  const metadataLoadError = metadata.error instanceof Error ? metadata.error.message : null;
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.heroCard}>
-        <View style={styles.heroAccent} />
-        <View style={styles.heroTop}>
-          <Text style={styles.eyebrow}>Lead Brief</Text>
-          <View style={[styles.statePill, { borderColor: stateColor, backgroundColor: colors.surfaceMuted }]}>
-            <Text style={[styles.stateText, { color: stateColor }]}>{displayState}</Text>
-          </View>
-        </View>
-
-        <Text style={styles.heroTitle}>{leadHeadline}</Text>
-        <Text style={styles.heroSubtitle}>Summary-first context for quick, high-quality follow-up.</Text>
-
-        <View style={styles.chips}>
-          <View style={styles.chip}>
-            <Text style={styles.chipLabel}>Task</Text>
-            <Text style={styles.chipValue}>{humanizeToken(routeTaskType)}</Text>
-          </View>
-          <View style={styles.chip}>
-            <Text style={styles.chipLabel}>Events</Text>
-            <Text style={styles.chipValue}>{eventCount}</Text>
-          </View>
-          <View style={styles.chip}>
-            <Text style={styles.chipLabel}>Language</Text>
-            <Text style={styles.chipValue}>{derived.data?.language ?? 'Unknown'}</Text>
-          </View>
-        </View>
-
-        <View style={styles.heroActions}>
-          <Link href={composeHref} style={[styles.actionButton, styles.actionPrimary]}>
-            Message
-          </Link>
-          <Link href="/call-outcome" style={[styles.actionButton, styles.actionSecondary]}>
-            Log Call
-          </Link>
-        </View>
-      </View>
-
-      <Card tone={mode} style={styles.summaryCard}>
-        <Text style={styles.sectionEyebrow}>AI Summary</Text>
-        <Text style={styles.summaryText}>{summaryText}</Text>
-        <Text style={styles.summaryMeta}>Updated {formatDateTime(derived.data?.updated_at)}</Text>
-      </Card>
-
-      <View style={styles.twoColumnRow}>
-        <Card tone={mode} style={styles.halfCard}>
-          <Text style={styles.sectionTitle}>Contact</Text>
-          <Text style={styles.infoLabel}>Primary Email</Text>
-          <Text style={styles.infoValue}>{primaryEmail ?? 'Unavailable'}</Text>
-
-          <Text style={styles.infoLabel}>Primary Phone</Text>
-          <Text style={styles.infoValue}>{primaryPhone ?? 'Unavailable'}</Text>
-        </Card>
-
-        <Card tone={mode} style={styles.halfCard}>
-          <Text style={styles.sectionTitle}>Timing</Text>
-          <Text style={styles.infoLabel}>Task Due</Text>
-          <Text style={styles.infoValue}>{formatDateTime(routeDueAt)}</Text>
-
-          <Text style={styles.infoLabel}>Next Action</Text>
-          <Text style={styles.infoValue}>{formatDateTime(derived.data?.next_action_at)}</Text>
-
-          <Text style={styles.infoLabel}>Last Touch</Text>
-          <Text style={styles.infoValue}>{formatDateTime(derived.data?.last_touch_at)}</Text>
-        </Card>
-      </View>
-
-      {highlightRows.length > 0 ? (
-        <Card tone={mode}>
-          <Text style={styles.sectionTitle}>Lead Highlights</Text>
-          {highlightRows.map((row) => (
-            <View key={row.label} style={styles.highlightRow}>
-              <Text style={styles.highlightLabel}>{row.label}</Text>
-              <Text style={styles.highlightValue}>{row.value}</Text>
+    <>
+      <Stack.Screen
+        options={{
+          headerBackTitle: '',
+          headerLeft: () => (
+            <Pressable onPress={() => router.back()} hitSlop={8}>
+              <Feather name="chevron-left" size={28} color={colors.text} />
+            </Pressable>
+          ),
+          headerRight: () => (
+            <View style={[s.headerBadge, { borderColor: stateColor }]}>
+              <Text style={[s.headerBadgeText, { color: stateColor }]}>{displayState}</Text>
             </View>
-          ))}
-        </Card>
-      ) : null}
+          ),
+        }}
+      />
 
-      <Card tone={mode} style={styles.timelineCard}>
-        <View style={styles.timelineHeader}>
-          <Text style={styles.sectionTitle}>Recent Activity</Text>
-          <Text style={styles.timelineMeta}>{eventCount} items</Text>
+      <ScrollView contentContainerStyle={s.container}>
+        {/* Client Memory Panel */}
+        <View style={s.memoryCard}>
+          <View style={s.memoryHeader}>
+            <Feather name="cpu" size={14} color={colors.warning} />
+            <Text style={s.memoryTitle}>CLIENT MEMORY</Text>
+          </View>
+
+          <Text style={s.memorySummary}>{summaryText}</Text>
+
+          {fields.length > 0 && (
+            <View style={s.fieldsGrid}>
+              {fields.map((f) => (
+                <View key={f.key} style={s.fieldCell}>
+                  <Feather name={f.icon} size={14} color={colors.textSecondary} />
+                  <View>
+                    <Text style={s.fieldLabel}>{f.label}</Text>
+                    <Text style={s.fieldValue}>{f.value}</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
+          <View style={s.lastTouchRow}>
+            <Feather name="clock" size={12} color={colors.textSecondary} />
+            <Text style={s.lastTouchText}>Last touch: {lastTouchRel}</Text>
+          </View>
         </View>
 
-        <Text style={styles.timelineMeta}>Last activity {formatDateTime(lastActivity)}</Text>
+        {/* Quick Actions */}
+        <View style={s.actionsRow}>
+          <Pressable style={[s.actionBtn, s.actionEmail]} onPress={() => router.push(composeHref)}>
+            <Feather name="mail" size={16} color={colors.primary} />
+            <Text style={s.actionEmailText}>Email</Text>
+          </Pressable>
+          <Pressable style={[s.actionBtn, s.actionCall]} onPress={() => router.push('/call-outcome')}>
+            <Feather name="phone" size={16} color={colors.accent} />
+            <Text style={s.actionCallText}>Call</Text>
+          </Pressable>
+          <Pressable style={[s.actionBtn, s.actionSchedule]}>
+            <Feather name="clock" size={16} color={colors.textSecondary} />
+            <Text style={s.actionScheduleText}>Schedule</Text>
+          </Pressable>
+        </View>
 
-        {timelineEvents.length === 0 ? (
-          <Text style={styles.emptyText}>No timeline events recorded yet.</Text>
-        ) : (
-          timelineEvents.map((event) => (
-            <View key={event.id} style={styles.timelineRow}>
-              <View style={[styles.timelineDot, { backgroundColor: colors.primary }]} />
-              <View style={styles.timelineTextWrap}>
-                <Text style={styles.timelineTop}>
-                  {humanizeToken(event.channel)} · {humanizeToken(event.direction)}
-                </Text>
-                <Text style={styles.timelineBottom}>
-                  {humanizeToken(event.type)} · {formatDateTime(event.created_at)}
-                </Text>
-              </View>
-            </View>
-          ))
+        {/* Next Action */}
+        {nextActionText && (
+          <View style={s.nextActionCard}>
+            <Text style={s.nextActionEyebrow}>NEXT ACTION</Text>
+            <Text style={s.nextActionText}>{nextActionText}</Text>
+          </View>
         )}
-      </Card>
 
-      {derived.isLoading || metadata.isLoading ? <Text style={styles.loading}>Loading lead summary...</Text> : null}
-      {leadLoadError ? <Text style={styles.error}>Unable to load derived profile ({leadLoadError})</Text> : null}
-      {metadataLoadError ? <Text style={styles.error}>Unable to load timeline metadata ({metadataLoadError})</Text> : null}
-    </ScrollView>
+        {/* Timeline */}
+        <Text style={s.timelineSectionTitle}>TIMELINE</Text>
+
+        {(derived.isLoading || metadata.isLoading) && (
+          <View style={s.statusCard}>
+            <Text style={s.statusText}>Loading...</Text>
+          </View>
+        )}
+
+        {leadLoadError && (
+          <View style={s.statusCard}>
+            <Text style={s.errText}>Unable to load profile ({leadLoadError})</Text>
+          </View>
+        )}
+        {metadataLoadError && (
+          <View style={s.statusCard}>
+            <Text style={s.errText}>Unable to load timeline ({metadataLoadError})</Text>
+          </View>
+        )}
+
+        {timelineEvents.length === 0 && !metadata.isLoading && !metadata.error && (
+          <View style={s.statusCard}>
+            <Text style={s.statusText}>No timeline events recorded yet.</Text>
+          </View>
+        )}
+
+        {timelineEvents.map((ev) => {
+          const isInbound = ev.direction === 'inbound';
+          const channelLabel = CHANNEL_LABEL[ev.channel] ?? humanizeToken(ev.channel);
+          const channelIcon: FeatherName = CHANNEL_ICON[ev.channel] ?? 'activity';
+          const iconBg = isInbound ? colors.primary + '1A' : colors.surfaceMuted;
+          const iconColor = isInbound ? colors.primary : colors.textSecondary;
+          const arrowIcon: FeatherName = isInbound ? 'arrow-down-left' : 'arrow-up-right';
+          const arrowColor = isInbound ? colors.primary : colors.textSecondary;
+
+          return (
+            <View key={ev.id} style={s.eventCard}>
+              <View style={s.eventHeader}>
+                <View style={[s.eventIconBox, { backgroundColor: iconBg }]}>
+                  <Feather name={channelIcon} size={13} color={iconColor} />
+                </View>
+                <Text style={s.eventChannel}>{channelLabel}</Text>
+                <Feather name={arrowIcon} size={12} color={arrowColor} style={s.eventArrow} />
+                <Text style={s.eventTime}>{formatDateTime(ev.created_at)}</Text>
+              </View>
+              <Text style={s.eventBody}>
+                {humanizeToken(ev.type)} {isInbound ? 'received from lead' : 'sent to lead'}
+              </Text>
+            </View>
+          );
+        })}
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+    </>
   );
 }
 
-function createStyles(colors: TabThemeColors) {
+/* ────────────────────────────────────────────────────────────
+   Styles
+   ──────────────────────────────────────────────────────────── */
+
+function createStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
+  const cardBg = mode === 'dark' ? '#101A2E' : '#F7F9FC';
+  const cardBorder = mode === 'dark' ? '#213452' : '#D4DEEE';
+  const elevatedBg = mode === 'dark' ? '#131E34' : '#FFFFFF';
+
   return StyleSheet.create({
-    container: {
-      paddingHorizontal: spacing.lg,
-      paddingTop: spacing.lg,
-      paddingBottom: 120
-    },
-    heroCard: {
-      borderRadius: 22,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-      padding: spacing.lg,
-      marginBottom: spacing.md,
-      position: 'relative',
-      overflow: 'hidden'
-    },
-    heroAccent: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      top: 0,
-      height: 4,
-      backgroundColor: colors.primary
-    },
-    heroTop: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: spacing.sm
-    },
-    eyebrow: {
-      color: colors.textSecondary,
-      fontSize: 11,
-      fontWeight: '700',
-      textTransform: 'uppercase',
-      letterSpacing: 0.8
-    },
-    statePill: {
+    headerBadge: {
       borderRadius: 999,
       borderWidth: 1,
       paddingHorizontal: 10,
-      paddingVertical: 5
+      paddingVertical: 4,
+      backgroundColor: colors.surfaceMuted,
     },
-    stateText: {
+    headerBadgeText: {
       fontSize: 12,
-      fontWeight: '800'
+      fontWeight: '700',
     },
-    heroTitle: {
-      color: colors.text,
-      fontSize: 28,
+
+    container: {
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+      paddingBottom: 120,
+    },
+
+    /* Client Memory */
+    memoryCard: {
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: elevatedBg,
+      padding: 16,
+      marginBottom: spacing.md,
+      shadowColor: '#040915',
+      shadowOpacity: 0.12,
+      shadowRadius: 14,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 5,
+    },
+    memoryHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      marginBottom: 10,
+    },
+    memoryTitle: {
+      color: colors.warning,
+      fontSize: 11,
       fontWeight: '800',
-      lineHeight: 34
+      letterSpacing: 1,
     },
-    heroSubtitle: {
-      color: colors.textSecondary,
-      marginTop: spacing.xs,
-      lineHeight: 20
+    memorySummary: {
+      color: colors.text,
+      fontSize: 14,
+      lineHeight: 21,
+      marginBottom: 12,
     },
-    chips: {
-      marginTop: spacing.md,
+    fieldsGrid: {
       flexDirection: 'row',
       flexWrap: 'wrap',
-      gap: spacing.xs
+      gap: 8,
+      marginBottom: 12,
     },
-    chip: {
+    fieldCell: {
+      width: '47%' as unknown as number,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
       backgroundColor: colors.surfaceMuted,
-      borderColor: colors.border,
-      borderWidth: 1,
-      borderRadius: 12,
+      borderRadius: 10,
       paddingVertical: 8,
       paddingHorizontal: 10,
-      minWidth: 94
     },
-    chipLabel: {
+    fieldLabel: {
       color: colors.textSecondary,
       fontSize: 10,
       fontWeight: '700',
       textTransform: 'uppercase',
-      letterSpacing: 0.4
+      letterSpacing: 0.4,
     },
-    chipValue: {
+    fieldValue: {
       color: colors.text,
       fontSize: 13,
       fontWeight: '700',
-      marginTop: 2
+      marginTop: 1,
     },
-    heroActions: {
-      marginTop: spacing.md,
+    lastTouchRow: {
       flexDirection: 'row',
-      gap: spacing.sm
-    },
-    actionButton: {
-      flex: 1,
-      borderRadius: 12,
-      paddingVertical: 12,
-      textAlign: 'center',
-      fontWeight: '800',
-      overflow: 'hidden'
-    },
-    actionPrimary: {
-      backgroundColor: colors.primary,
-      color: colors.white
-    },
-    actionSecondary: {
-      backgroundColor: colors.cardMuted,
-      color: colors.text
-    },
-    summaryCard: {
-      marginBottom: spacing.md
-    },
-    sectionEyebrow: {
-      color: colors.textSecondary,
-      fontSize: 11,
-      textTransform: 'uppercase',
-      letterSpacing: 0.8,
-      fontWeight: '700',
-      marginBottom: spacing.xs
-    },
-    summaryText: {
-      color: colors.text,
-      fontSize: 15,
-      lineHeight: 23,
-      fontWeight: '500'
-    },
-    summaryMeta: {
-      color: colors.textSecondary,
-      marginTop: spacing.sm,
-      fontSize: 12
-    },
-    twoColumnRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      marginBottom: spacing.xs
-    },
-    halfCard: {
-      flex: 1
-    },
-    sectionTitle: {
-      color: colors.text,
-      fontWeight: '800',
-      fontSize: 16,
-      marginBottom: spacing.sm
-    },
-    infoLabel: {
-      color: colors.textSecondary,
-      fontSize: 11,
-      textTransform: 'uppercase',
-      letterSpacing: 0.6,
-      marginTop: spacing.xs,
-      marginBottom: 2,
-      fontWeight: '700'
-    },
-    infoValue: {
-      color: colors.text,
-      fontSize: 14,
-      lineHeight: 20
-    },
-    highlightRow: {
+      alignItems: 'center',
+      gap: 6,
       borderTopWidth: 1,
-      borderTopColor: colors.border,
-      paddingTop: spacing.sm,
-      marginTop: spacing.sm
+      borderTopColor: cardBorder,
+      paddingTop: 10,
     },
-    highlightLabel: {
-      color: colors.textSecondary,
-      fontSize: 11,
-      textTransform: 'uppercase',
-      letterSpacing: 0.6,
-      fontWeight: '700'
-    },
-    highlightValue: {
-      color: colors.text,
-      marginTop: 4,
-      fontSize: 14
-    },
-    timelineCard: {
-      marginBottom: spacing.xs
-    },
-    timelineHeader: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'baseline'
-    },
-    timelineMeta: {
+    lastTouchText: {
       color: colors.textSecondary,
       fontSize: 12,
-      marginBottom: spacing.sm
     },
-    emptyText: {
-      color: colors.textSecondary
-    },
-    timelineRow: {
+
+    /* Quick Actions */
+    actionsRow: {
       flexDirection: 'row',
-      alignItems: 'flex-start',
-      marginBottom: spacing.sm
+      gap: 8,
+      marginBottom: spacing.md,
     },
-    timelineDot: {
-      width: 8,
-      height: 8,
-      borderRadius: 999,
-      marginTop: 6,
-      marginRight: spacing.sm
+    actionBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      borderRadius: 12,
+      paddingVertical: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      borderWidth: 1,
+      overflow: 'hidden',
     },
-    timelineTextWrap: {
-      flex: 1
+    actionEmail: {
+      backgroundColor: colors.primary + '1A',
+      borderColor: colors.primary + '33',
     },
-    timelineTop: {
-      color: colors.text,
-      fontWeight: '700',
-      fontSize: 13
+    actionEmailText: {
+      color: colors.primary,
+      fontSize: 14,
+      fontWeight: '600',
     },
-    timelineBottom: {
+    actionCall: {
+      backgroundColor: colors.accent + '1A',
+      borderColor: colors.accent + '33',
+    },
+    actionCallText: {
+      color: colors.accent,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    actionSchedule: {
+      backgroundColor: colors.surfaceMuted,
+      borderColor: cardBorder,
+    },
+    actionScheduleText: {
       color: colors.textSecondary,
-      marginTop: 2,
-      fontSize: 12
+      fontSize: 14,
+      fontWeight: '600',
     },
-    loading: {
+
+    /* Next Action */
+    nextActionCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: cardBg,
+      padding: 14,
+      marginBottom: spacing.md,
+    },
+    nextActionEyebrow: {
+      color: colors.textSecondary,
+      fontSize: 10,
+      fontWeight: '700',
+      letterSpacing: 0.8,
+      marginBottom: 4,
+    },
+    nextActionText: {
       color: colors.text,
-      marginTop: spacing.sm
+      fontSize: 14,
+      fontWeight: '600',
     },
-    error: {
+
+    /* Timeline */
+    timelineSectionTitle: {
+      color: colors.text,
+      fontSize: 13,
+      fontWeight: '800',
+      letterSpacing: 1,
+      marginBottom: 10,
+    },
+    eventCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: cardBg,
+      padding: 14,
+      marginBottom: 10,
+    },
+    eventHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    eventIconBox: {
+      width: 26,
+      height: 26,
+      borderRadius: 6,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 8,
+    },
+    eventChannel: {
+      color: colors.text,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    eventArrow: {
+      marginLeft: 4,
+    },
+    eventTime: {
+      color: colors.textSecondary,
+      fontSize: 11,
+      marginLeft: 'auto',
+    },
+    eventBody: {
+      color: colors.textSecondary,
+      fontSize: 13,
+      lineHeight: 19,
+    },
+
+    statusCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: cardBg,
+      padding: 14,
+      marginBottom: 10,
+    },
+    statusText: {
+      color: colors.textSecondary,
+    },
+    errText: {
       color: '#FF8A8A',
-      marginTop: spacing.xs
-    }
+    },
   });
 }

@@ -5,6 +5,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "dev": "expo start",
+    "dev:ios": "expo start --ios",
     "dev:lan": "expo start --lan -c",
     "dev:tunnel": "expo start --tunnel -c",
     "build": "expo export",
@@ -17,6 +18,7 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
+    "@expo/vector-icons": "^15.0.3",
     "@mvp/shared-types": "workspace:*",
     "@tanstack/react-query": "^5.62.8",
     "expo": "~54.0.33",

@@ -27,18 +27,19 @@ function RootStack(): JSX.Element {
       screenOptions={{
         headerStyle: { backgroundColor: colors.background },
         headerTintColor: colors.text,
-        headerTitleStyle: { fontWeight: '700' },
+        headerTitle: '',
+        headerBackTitle: '',
         contentStyle: { backgroundColor: colors.background }
       }}
     >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="lead/[id]" options={{ title: 'Lead Thread' }} />
-      <Stack.Screen name="templates" options={{ title: 'Templates' }} />
-      <Stack.Screen name="compose" options={{ title: 'Compose' }} />
-      <Stack.Screen name="mailboxes" options={{ title: 'Mailboxes' }} />
-      <Stack.Screen name="call-outcome" options={{ title: 'Call Outcome' }} />
-      <Stack.Screen name="rescue" options={{ title: 'Rescue' }} />
-      <Stack.Screen name="settings" options={{ title: 'Profile Settings' }} />
+      <Stack.Screen name="lead/[id]" />
+      <Stack.Screen name="templates" />
+      <Stack.Screen name="compose" />
+      <Stack.Screen name="mailboxes" />
+      <Stack.Screen name="call-outcome" />
+      <Stack.Screen name="rescue" />
+      <Stack.Screen name="settings" />
     </Stack>
   );
 }

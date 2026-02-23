@@ -6,7 +6,9 @@
     "node": ">=20 <25"
   },
   "scripts": {
-    "dev": "turbo run dev --parallel",
+    "setup": "bash scripts/setup.sh",
+    "dev": "pnpm --filter @mvp/api dev & pnpm --filter @mvp/worker dev & pnpm --filter @mvp/web-admin dev & pnpm --filter @mvp/mobile dev:ios & wait",
+    "dev:no-mobile": "pnpm --filter @mvp/api dev & pnpm --filter @mvp/worker dev & pnpm --filter @mvp/web-admin dev & wait",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
