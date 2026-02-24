@@ -1,3 +1,4 @@
+import { useClerk, useUser } from '@clerk/clerk-expo';
 import { useMemo } from 'react';
 import { Link } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -7,16 +8,11 @@ import { Card } from '../../components/card';
 import { spacing } from '../../lib/theme';
 import { TabThemeColors, useTabTheme } from '../../lib/tab-theme';
 
-const profile = {
-  userId: process.env.EXPO_PUBLIC_USER_ID ?? '00000000-0000-0000-0000-000000000001',
-  teamId: process.env.EXPO_PUBLIC_TEAM_ID ?? '00000000-0000-0000-0000-000000000010',
-  role: process.env.EXPO_PUBLIC_ROLE ?? 'AGENT',
-  language: 'en'
-};
-
 export default function ProfileScreen(): JSX.Element {
   const { colors, mode, setMode } = useTabTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const { user } = useUser();
+  const { signOut } = useClerk();
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -46,18 +42,17 @@ export default function ProfileScreen(): JSX.Element {
       </Card>
 
       <Card tone={mode}>
-        <Text style={styles.sectionTitle}>Workspace Identity</Text>
-        <Text style={styles.rowLabel}>Role</Text>
-        <Text style={styles.rowValue}>{profile.role}</Text>
+        <Text style={styles.sectionTitle}>Account</Text>
+        <Text style={styles.rowLabel}>Email</Text>
+        <Text style={styles.rowValue}>{user?.primaryEmailAddress?.emailAddress ?? '—'}</Text>
 
-        <Text style={styles.rowLabel}>Language</Text>
-        <Text style={styles.rowValue}>{profile.language}</Text>
+        <Text style={styles.rowLabel}>Name</Text>
+        <Text style={styles.rowValue}>
+          {[user?.firstName, user?.lastName].filter(Boolean).join(' ') || '—'}
+        </Text>
 
         <Text style={styles.rowLabel}>User ID</Text>
-        <Text style={styles.code}>{profile.userId}</Text>
-
-        <Text style={styles.rowLabel}>Team ID</Text>
-        <Text style={styles.code}>{profile.teamId}</Text>
+        <Text style={styles.code}>{user?.id ?? '—'}</Text>
       </Card>
 
       <Card tone={mode}>
@@ -87,6 +82,10 @@ export default function ProfileScreen(): JSX.Element {
         <Link href="/mailboxes" style={styles.cta}>
           <Text style={styles.ctaText}>Sync Mailboxes</Text>
         </Link>
+
+        <Pressable style={styles.signOut} onPress={() => signOut()}>
+          <Text style={styles.signOutText}>Sign Out</Text>
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -189,6 +188,18 @@ function createStyles(colors: TabThemeColors) {
     ctaText: {
       color: colors.white,
       fontWeight: '800'
+    },
+    signOut: {
+      marginTop: spacing.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 14,
+      alignItems: 'center',
+      paddingVertical: 14
+    },
+    signOutText: {
+      color: '#FF6B6B',
+      fontWeight: '700'
     }
   });
 }

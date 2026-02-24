@@ -8,8 +8,9 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { createRemoteJWKSet, jwtVerify, JWTVerifyResult } from 'jose';
 
+import { DatabaseService } from '../db/database.service';
 import { IS_PUBLIC_KEY } from './public.decorator';
-import { RequestWithUser } from './user-context';
+import { RequestWithUser, UserContext } from './user-context';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -17,7 +18,8 @@ export class AuthGuard implements CanActivate {
 
   constructor(
     private readonly reflector: Reflector,
-    private readonly configService: ConfigService
+    private readonly configService: ConfigService,
+    private readonly databaseService: DatabaseService
   ) {
     const jwksUri = this.configService.get<string>('JWT_JWKS_URI');
     if (jwksUri) {
@@ -62,40 +64,75 @@ export class AuthGuard implements CanActivate {
     throw new UnauthorizedException('Authentication required');
   }
 
-  private async validateJwt(token: string): Promise<{ userId: string; teamId: string; role: 'AGENT' | 'TEAM_LEAD' }> {
+  private async validateJwt(token: string): Promise<UserContext> {
     if (!this.jwks) {
       throw new UnauthorizedException('JWKS not configured');
     }
 
-    const issuer = this.configService.getOrThrow<string>('JWT_ISSUER');
-    const audience = this.configService.getOrThrow<string>('JWT_AUDIENCE');
+    const issuer = this.configService.get<string>('JWT_ISSUER');
+    const audience = this.configService.get<string>('JWT_AUDIENCE');
+
+    const verifyOptions: { issuer?: string; audience?: string } = {};
+    if (issuer) verifyOptions.issuer = issuer;
+    if (audience) verifyOptions.audience = audience;
 
     let verified: JWTVerifyResult;
     try {
-      verified = await jwtVerify(token, this.jwks, { issuer, audience });
+      verified = await jwtVerify(token, this.jwks, verifyOptions);
     } catch (error) {
       throw new UnauthorizedException('Invalid bearer token');
     }
 
-    const teamId = verified.payload['team_id'];
-    const roleClaim = verified.payload['role'];
     const subject = verified.payload.sub;
-
-    let role: 'AGENT' | 'TEAM_LEAD';
-    if (roleClaim === 'AGENT' || roleClaim === 'TEAM_LEAD') {
-      role = roleClaim;
-    } else {
-      throw new UnauthorizedException('Token missing required claims');
+    if (!subject) {
+      throw new UnauthorizedException('Token missing subject claim');
     }
 
-    if (!subject || typeof teamId !== 'string') {
-      throw new UnauthorizedException('Token missing required claims');
+    return this.resolveUser(subject);
+  }
+
+  private async resolveUser(clerkId: string): Promise<UserContext> {
+    const existing = await this.databaseService.query<{
+      id: string;
+      team_id: string;
+      role: 'AGENT' | 'TEAM_LEAD';
+    }>(
+      `SELECT id, team_id, role FROM "User" WHERE clerk_id = $1`,
+      [clerkId]
+    );
+
+    if (existing.rows[0]) {
+      return {
+        userId: existing.rows[0].id,
+        teamId: existing.rows[0].team_id,
+        role: existing.rows[0].role
+      };
     }
 
-    return {
-      userId: subject,
-      teamId,
-      role
-    };
+    if (this.configService.get<string>('NODE_ENV') !== 'production') {
+      const linked = await this.databaseService.query<{
+        id: string;
+        team_id: string;
+        role: 'AGENT' | 'TEAM_LEAD';
+      }>(
+        `UPDATE "User"
+         SET clerk_id = $1
+         WHERE clerk_id IS NULL AND role = 'AGENT'
+         RETURNING id, team_id, role`,
+        [clerkId]
+      );
+
+      if (linked.rows[0]) {
+        return {
+          userId: linked.rows[0].id,
+          teamId: linked.rows[0].team_id,
+          role: linked.rows[0].role
+        };
+      }
+    }
+
+    throw new UnauthorizedException(
+      'No linked user account found. Ask a team admin to provision your account.'
+    );
   }
 }

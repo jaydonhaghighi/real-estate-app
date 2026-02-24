@@ -1,13 +1,15 @@
 import { z } from 'zod';
 
+const emptyToUndefined = z.string().transform((v) => (v === '' ? undefined : v));
+
 export const appEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().default(3001),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
-  JWT_ISSUER: z.string().url(),
-  JWT_AUDIENCE: z.string().min(1),
-  JWT_JWKS_URI: z.string().url(),
+  JWT_ISSUER: emptyToUndefined.pipe(z.string().url().optional()).optional(),
+  JWT_AUDIENCE: emptyToUndefined.pipe(z.string().min(1).optional()).optional(),
+  JWT_JWKS_URI: emptyToUndefined.pipe(z.string().url().optional()).optional(),
   WEBHOOK_SHARED_SECRET: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
