@@ -1,19 +1,23 @@
 import Constants from 'expo-constants';
 
-export interface ApiContext {
-  userId: string;
-  teamId: string;
-  role: 'AGENT' | 'TEAM_LEAD';
-}
-
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string>;
 const apiBaseUrl = extra.API_BASE_URL ?? process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1';
 
-const defaultContext: ApiContext = {
-  userId: process.env.EXPO_PUBLIC_USER_ID ?? '00000000-0000-0000-0000-000000000001',
-  teamId: process.env.EXPO_PUBLIC_TEAM_ID ?? '00000000-0000-0000-0000-000000000010',
-  role: (process.env.EXPO_PUBLIC_ROLE as 'AGENT' | 'TEAM_LEAD') ?? 'AGENT'
-};
+let _getToken: (() => Promise<string | null>) | null = null;
+
+export function setTokenProvider(fn: () => Promise<string | null>): void {
+  _getToken = fn;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  if (_getToken) {
+    const token = await _getToken();
+    if (token) {
+      return { Authorization: `Bearer ${token}` };
+    }
+  }
+  return {};
+}
 
 async function buildHttpError(response: Response): Promise<Error> {
   let details: string | undefined;
@@ -44,29 +48,20 @@ async function buildHttpError(response: Response): Promise<Error> {
   return new Error(`${response.status} ${statusText}`);
 }
 
-export async function apiGet<T>(path: string, context = defaultContext): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: {
-      'x-user-id': context.userId,
-      'x-team-id': context.teamId,
-      'x-role': context.role
-    }
-  });
+export async function apiGet<T>(path: string): Promise<T> {
+  const headers = await authHeaders();
+  const response = await fetch(`${apiBaseUrl}${path}`, { headers });
   if (!response.ok) {
     throw await buildHttpError(response);
   }
   return response.json() as Promise<T>;
 }
 
-export async function apiPost<T>(path: string, body: unknown, context = defaultContext): Promise<T> {
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const headers = await authHeaders();
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-user-id': context.userId,
-      'x-team-id': context.teamId,
-      'x-role': context.role
-    },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body)
   });
   if (!response.ok) {
@@ -75,15 +70,11 @@ export async function apiPost<T>(path: string, body: unknown, context = defaultC
   return response.json() as Promise<T>;
 }
 
-export async function apiPut<T>(path: string, body: unknown, context = defaultContext): Promise<T> {
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const headers = await authHeaders();
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: 'PUT',
-    headers: {
-      'content-type': 'application/json',
-      'x-user-id': context.userId,
-      'x-team-id': context.teamId,
-      'x-role': context.role
-    },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body)
   });
 

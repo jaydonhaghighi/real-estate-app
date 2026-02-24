@@ -202,26 +202,56 @@ async function main(): Promise<void> {
       {
         lead_id: '00000000-0000-0000-0000-000000000100',
         summary: 'New lead from inbound email. Needs first touch and scheduling intent.',
+        fields: {
+          budget: '$750k',
+          area: 'Downtown',
+          bedrooms: 2,
+          timeline: '30-60 days'
+        },
         metrics: { urgency: 'high', touches_last_48h: 0 }
       },
       {
         lead_id: '00000000-0000-0000-0000-000000000101',
         summary: 'Engaged over SMS. Wants options in the west side area this week.',
+        fields: {
+          budget: '$1.2M',
+          area: 'West Side',
+          bedrooms: 3,
+          timeline: 'This month'
+        },
         metrics: { urgency: 'medium', touches_last_48h: 2 }
       },
       {
         lead_id: '00000000-0000-0000-0000-000000000102',
         summary: 'Follow-up lagging and close to stale threshold. Needs quick outbound touch.',
+        fields: {
+          budget: '$540k',
+          area: 'North End',
+          bedrooms: 1,
+          timeline: '90+ days'
+        },
         metrics: { urgency: 'high', touches_last_48h: 1 }
       },
       {
         lead_id: '00000000-0000-0000-0000-000000000103',
         summary: 'No recent valid touches. In stale rescue path and ready for intervention.',
+        fields: {
+          budget: '$950k',
+          area: 'Suburbs',
+          bedrooms: 4,
+          timeline: '60-90 days'
+        },
         metrics: { urgency: 'critical', touches_last_48h: 0 }
       },
       {
         lead_id: '00000000-0000-0000-0000-000000000104',
         summary: 'Recent phone interaction completed. Awaiting follow-up note and next step.',
+        fields: {
+          budget: '$680k',
+          area: 'River District',
+          bedrooms: 2,
+          timeline: '45 days'
+        },
         metrics: { urgency: 'medium', touches_last_48h: 1 }
       }
     ];
@@ -229,14 +259,19 @@ async function main(): Promise<void> {
     for (const profile of profiles) {
       await client.query(
         `INSERT INTO "DerivedLeadProfile" (lead_id, summary, language, fields_json, metrics_json, updated_at)
-         VALUES ($1, $2, 'en', '{}'::jsonb, $3::jsonb, now())
+         VALUES ($1, $2, 'en', $3::jsonb, $4::jsonb, now())
          ON CONFLICT (lead_id) DO UPDATE
          SET summary = EXCLUDED.summary,
              language = EXCLUDED.language,
              fields_json = EXCLUDED.fields_json,
              metrics_json = EXCLUDED.metrics_json,
              updated_at = EXCLUDED.updated_at`,
-        [profile.lead_id, profile.summary, JSON.stringify(profile.metrics)]
+        [
+          profile.lead_id,
+          profile.summary,
+          JSON.stringify(profile.fields ?? {}),
+          JSON.stringify(profile.metrics)
+        ]
       );
     }
 
@@ -300,6 +335,7 @@ async function main(): Promise<void> {
     }
 
     const conversationEvents = [
+      // ── Lead 100 (New) ──
       {
         id: '00000000-0000-0000-0000-000000000500',
         lead_id: '00000000-0000-0000-0000-000000000100',
@@ -307,6 +343,80 @@ async function main(): Promise<void> {
         type: 'inbound_message',
         direction: 'inbound',
         created_at: hoursFromNow(-2)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000504',
+        lead_id: '00000000-0000-0000-0000-000000000100',
+        channel: 'system',
+        type: 'lead_created',
+        direction: 'internal',
+        created_at: hoursFromNow(-2)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000505',
+        lead_id: '00000000-0000-0000-0000-000000000100',
+        channel: 'system',
+        type: 'auto_assigned',
+        direction: 'internal',
+        created_at: hoursFromNow(-2)
+      },
+
+      // ── Lead 101 (Active, SMS) ──
+      {
+        id: '00000000-0000-0000-0000-000000000506',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'system',
+        type: 'lead_created',
+        direction: 'internal',
+        created_at: hoursFromNow(-72)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000507',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'sms',
+        type: 'inbound_message',
+        direction: 'inbound',
+        created_at: hoursFromNow(-70)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000508',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'sms',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-69)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000509',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'call',
+        type: 'call_completed',
+        direction: 'outbound',
+        created_at: hoursFromNow(-48)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000510',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'note',
+        type: 'agent_note',
+        direction: 'internal',
+        created_at: hoursFromNow(-48)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000511',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'email',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-24)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000512',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'email',
+        type: 'inbound_message',
+        direction: 'inbound',
+        created_at: hoursFromNow(-20)
       },
       {
         id: '00000000-0000-0000-0000-000000000501',
@@ -317,6 +427,56 @@ async function main(): Promise<void> {
         created_at: hoursFromNow(-3)
       },
       {
+        id: '00000000-0000-0000-0000-000000000513',
+        lead_id: '00000000-0000-0000-0000-000000000101',
+        channel: 'sms',
+        type: 'inbound_message',
+        direction: 'inbound',
+        created_at: hoursFromNow(-2)
+      },
+
+      // ── Lead 102 (At-Risk) ──
+      {
+        id: '00000000-0000-0000-0000-000000000514',
+        lead_id: '00000000-0000-0000-0000-000000000102',
+        channel: 'system',
+        type: 'lead_created',
+        direction: 'internal',
+        created_at: hoursFromNow(-120)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000515',
+        lead_id: '00000000-0000-0000-0000-000000000102',
+        channel: 'email',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-118)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000516',
+        lead_id: '00000000-0000-0000-0000-000000000102',
+        channel: 'email',
+        type: 'inbound_message',
+        direction: 'inbound',
+        created_at: hoursFromNow(-96)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000517',
+        lead_id: '00000000-0000-0000-0000-000000000102',
+        channel: 'call',
+        type: 'call_no_answer',
+        direction: 'outbound',
+        created_at: hoursFromNow(-72)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000518',
+        lead_id: '00000000-0000-0000-0000-000000000102',
+        channel: 'sms',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-71)
+      },
+      {
         id: '00000000-0000-0000-0000-000000000502',
         lead_id: '00000000-0000-0000-0000-000000000102',
         channel: 'call',
@@ -325,12 +485,168 @@ async function main(): Promise<void> {
         created_at: hoursFromNow(-22)
       },
       {
+        id: '00000000-0000-0000-0000-000000000519',
+        lead_id: '00000000-0000-0000-0000-000000000102',
+        channel: 'note',
+        type: 'agent_note',
+        direction: 'internal',
+        created_at: hoursFromNow(-22)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000520',
+        lead_id: '00000000-0000-0000-0000-000000000102',
+        channel: 'system',
+        type: 'at_risk_warning',
+        direction: 'internal',
+        created_at: hoursFromNow(-6)
+      },
+
+      // ── Lead 103 (Stale) ──
+      {
+        id: '00000000-0000-0000-0000-000000000521',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'system',
+        type: 'lead_created',
+        direction: 'internal',
+        created_at: hoursFromNow(-168)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000522',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'email',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-166)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000523',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'email',
+        type: 'inbound_message',
+        direction: 'inbound',
+        created_at: hoursFromNow(-140)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000524',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'call',
+        type: 'call_no_answer',
+        direction: 'outbound',
+        created_at: hoursFromNow(-120)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000525',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'sms',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-96)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000526',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'call',
+        type: 'call_no_answer',
+        direction: 'outbound',
+        created_at: hoursFromNow(-72)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000527',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'email',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-60)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000528',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'system',
+        type: 'sla_breach',
+        direction: 'internal',
+        created_at: hoursFromNow(-12)
+      },
+      {
         id: '00000000-0000-0000-0000-000000000503',
         lead_id: '00000000-0000-0000-0000-000000000103',
         channel: 'system',
         type: 'stale_transition',
         direction: 'internal',
         created_at: hoursFromNow(-4)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000529',
+        lead_id: '00000000-0000-0000-0000-000000000103',
+        channel: 'system',
+        type: 'rescue_sequence_started',
+        direction: 'internal',
+        created_at: hoursFromNow(-4)
+      },
+
+      // ── Lead 104 (Active, manual) ──
+      {
+        id: '00000000-0000-0000-0000-000000000530',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'system',
+        type: 'lead_created',
+        direction: 'internal',
+        created_at: hoursFromNow(-36)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000531',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'call',
+        type: 'inbound_call',
+        direction: 'inbound',
+        created_at: hoursFromNow(-34)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000532',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'note',
+        type: 'agent_note',
+        direction: 'internal',
+        created_at: hoursFromNow(-34)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000533',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'email',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-30)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000534',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'email',
+        type: 'inbound_message',
+        direction: 'inbound',
+        created_at: hoursFromNow(-18)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000535',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'sms',
+        type: 'outbound_message',
+        direction: 'outbound',
+        created_at: hoursFromNow(-6)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000536',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'call',
+        type: 'call_completed',
+        direction: 'outbound',
+        created_at: hoursFromNow(-1)
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000537',
+        lead_id: '00000000-0000-0000-0000-000000000104',
+        channel: 'note',
+        type: 'agent_note',
+        direction: 'internal',
+        created_at: hoursFromNow(-1)
       }
     ] as const;
 

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Card } from '../../components/card';
 import { apiGet } from '../../lib/api';
@@ -74,9 +75,10 @@ export default function MetricsScreen(): JSX.Element {
   }, [tasks.data]);
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Metrics</Text>
-      <Text style={styles.subtitle}>Execution visibility across queue volume and lead risk levels.</Text>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.container}>
+        <Text style={styles.title}>Metrics</Text>
+        <Text style={styles.subtitle}>Execution visibility across queue volume and lead risk levels.</Text>
 
       <Card tone={mode}>
         <Text style={styles.cardTitle}>System Health</Text>
@@ -134,17 +136,23 @@ export default function MetricsScreen(): JSX.Element {
         />
       </Card>
 
-      {systemMetrics.isLoading || tasks.isLoading ? <Text style={styles.loading}>Refreshing metrics...</Text> : null}
-      {systemMetrics.error || tasks.error ? <Text style={styles.error}>Unable to load one or more metrics.</Text> : null}
-    </ScrollView>
+        {systemMetrics.isLoading || tasks.isLoading ? <Text style={styles.loading}>Refreshing metrics...</Text> : null}
+        {systemMetrics.error || tasks.error ? <Text style={styles.error}>Unable to load one or more metrics.</Text> : null}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 function createStyles(colors: TabThemeColors) {
   return StyleSheet.create({
     container: {
-      padding: spacing.lg,
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
       paddingBottom: 120
+    },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background
     },
     title: {
       color: colors.text,

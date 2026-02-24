@@ -1,12 +1,29 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useRouter } from 'expo-router';
-import { Animated, Easing, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import {
+  Animated,
+  Easing,
+  LayoutAnimation,
+  PanResponder,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  UIManager,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
 
-import { Card } from '../../components/card';
 import { apiGet, apiPost } from '../../lib/api';
 import { spacing } from '../../lib/theme';
 import { TabThemeColors, useTabTheme } from '../../lib/tab-theme';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 interface TaskCard {
   id: string;
@@ -19,53 +36,51 @@ interface TaskCard {
   primary_phone?: string;
 }
 
-const SWIPE_ACTION_THRESHOLD = 132;
-const SWIPE_MAX_DRAG = 360;
-const SWIPE_OUT_DISTANCE = 320;
+const SWIPE_THRESHOLD = 120;
+const SWIPE_OUT_DISTANCE = 400;
+const MAX_ROTATION = 5;
 
 function formatTaskType(value: string): string {
   return value
     .split('_')
-    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
 }
 
 function formatDueDate(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return 'Unknown';
-  }
-
-  return parsed.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit'
-  });
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return 'Unknown';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function getPrimaryContact(task: TaskCard): string {
-  return task.primary_email ?? task.primary_phone ?? 'No contact available';
+  return task.primary_email ?? task.primary_phone ?? 'No contact';
 }
 
-function getLeadStateColor(colors: TabThemeColors, state: string): string {
-  if (state === 'Active') {
-    return colors.accent;
-  }
-  if (state === 'At-Risk') {
-    return colors.warning;
-  }
-  if (state === 'Stale') {
-    return '#FF7A7A';
-  }
+function getStateColor(colors: TabThemeColors, state: string): string {
+  if (state === 'Active') return colors.accent;
+  if (state === 'At-Risk') return colors.warning;
+  if (state === 'Stale') return '#FF7A7A';
   return colors.primary;
 }
 
+const reflow = () =>
+  LayoutAnimation.configureNext({
+    duration: 280,
+    update: { type: LayoutAnimation.Types.easeInEaseOut },
+    delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity },
+  });
+
+/* ────────────────────────────────────────────────────────────
+   Swipeable Task Card
+   Swipe right → Done  ·  Swipe left → Snooze  ·  Tap → Open
+   ──────────────────────────────────────────────────────────── */
+
 interface TaskSwipeCardProps {
   task: TaskCard;
-  mode: 'dark' | 'light';
+  index: number;
   colors: TabThemeColors;
-  styles: ReturnType<typeof createStyles>;
+  mode: 'dark' | 'light';
   onDone: (taskId: string) => void;
   onSnooze: (taskId: string) => void;
   onOpenLead: (task: TaskCard) => void;
@@ -75,241 +90,249 @@ interface TaskSwipeCardProps {
 
 function TaskSwipeCard({
   task,
-  mode,
+  index,
   colors,
-  styles,
+  mode,
   onDone,
   onSnooze,
   onOpenLead,
   onSwipeStart,
-  onSwipeEnd
-}: TaskSwipeCardProps): JSX.Element {
+  onSwipeEnd,
+}: TaskSwipeCardProps) {
+  const cs = useMemo(() => cardStyles(colors, mode), [colors, mode]);
   const translateX = useRef(new Animated.Value(0)).current;
-  const leadParams: Record<string, string> = {
-    id: task.lead_id
-  };
+  const entrance = useRef(new Animated.Value(0)).current;
+
+  const stateColor = getStateColor(colors, task.lead_state);
   const contact = getPrimaryContact(task);
-  const leadStateColor = getLeadStateColor(colors, task.lead_state);
   const contactInitial = contact.charAt(0).toUpperCase();
 
-  if (task.primary_email) {
-    leadParams.primary_email = task.primary_email;
-  }
-  if (task.primary_phone) {
-    leadParams.primary_phone = task.primary_phone;
-  }
-  leadParams.lead_state = task.lead_state;
-  leadParams.task_type = task.type;
-  leadParams.due_at = task.due_at;
-  const leadHref = { pathname: '/lead/[id]' as const, params: leadParams };
-
-  const translateY = translateX.interpolate({
-    inputRange: [-SWIPE_MAX_DRAG, 0, SWIPE_MAX_DRAG],
-    outputRange: [-8, 0, -8],
-    extrapolate: 'clamp'
-  });
+  // Staggered entrance
+  useEffect(() => {
+    Animated.timing(entrance, {
+      toValue: 1,
+      duration: 350,
+      delay: index * 60,
+      easing: Easing.out(Easing.back(1.4)),
+      useNativeDriver: true,
+    }).start();
+  }, []);
 
   const rotateZ = translateX.interpolate({
-    inputRange: [-SWIPE_MAX_DRAG, 0, SWIPE_MAX_DRAG],
-    outputRange: ['-2.4deg', '0deg', '2.4deg'],
-    extrapolate: 'clamp'
+    inputRange: [-SWIPE_OUT_DISTANCE, 0, SWIPE_OUT_DISTANCE],
+    outputRange: [`-${MAX_ROTATION}deg`, '0deg', `${MAX_ROTATION}deg`],
+    extrapolate: 'clamp',
   });
 
-  const answerOpacity = translateX.interpolate({
-    inputRange: [0, 24, 72, 120],
-    outputRange: [0, 0.4, 0.8, 1],
-    extrapolate: 'clamp'
+  const doneHintOpacity = translateX.interpolate({
+    inputRange: [0, 30, SWIPE_THRESHOLD],
+    outputRange: [0, 0.4, 1],
+    extrapolate: 'clamp',
   });
 
-  const answerTranslateX = translateX.interpolate({
-    inputRange: [0, 120],
-    outputRange: [-20, 0],
-    extrapolate: 'clamp'
+  const snoozeHintOpacity = translateX.interpolate({
+    inputRange: [-SWIPE_THRESHOLD, -30, 0],
+    outputRange: [1, 0.4, 0],
+    extrapolate: 'clamp',
   });
 
-  const snoozeOpacity = translateX.interpolate({
-    inputRange: [-120, -72, -24, 0],
-    outputRange: [1, 0.8, 0.4, 0],
-    extrapolate: 'clamp'
+  const entranceOpacity = entrance;
+  const entranceTranslateY = entrance.interpolate({
+    inputRange: [0, 1],
+    outputRange: [24, 0],
   });
 
-  const snoozeTranslateX = translateX.interpolate({
-    inputRange: [-120, 0],
-    outputRange: [0, 18],
-    extrapolate: 'clamp'
-  });
-
-  function resetPosition(): void {
+  const resetPosition = useCallback(() => {
     Animated.spring(translateX, {
       toValue: 0,
-      damping: 18,
-      stiffness: 170,
-      mass: 0.85,
-      useNativeDriver: true
-    }).start(() => {
-      onSwipeEnd();
-    });
-  }
+      damping: 20,
+      stiffness: 180,
+      mass: 0.8,
+      useNativeDriver: true,
+    }).start(() => onSwipeEnd());
+  }, [translateX, onSwipeEnd]);
 
-  function completeSwipe(toValue: number, callback: () => void): void {
-    Animated.timing(translateX, {
-      toValue,
-      duration: 240,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true
-    }).start(({ finished }) => {
-      if (!finished) {
-        resetPosition();
-        return;
-      }
-
-      translateX.setValue(0);
-      onSwipeEnd();
-      callback();
-    });
-  }
+  const flyOut = useCallback(
+    (direction: 'right' | 'left', cb: () => void) => {
+      const toValue = direction === 'right' ? SWIPE_OUT_DISTANCE : -SWIPE_OUT_DISTANCE;
+      Animated.timing(translateX, {
+        toValue,
+        duration: 260,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        onSwipeEnd();
+        if (finished) {
+          reflow();
+          cb();
+        }
+      });
+    },
+    [translateX, onSwipeEnd]
+  );
 
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gestureState) =>
-          Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 0.8,
+        onMoveShouldSetPanResponder: (_e, gs) =>
+          Math.abs(gs.dx) > 8 && Math.abs(gs.dx) > Math.abs(gs.dy) * 0.9,
         onPanResponderGrant: () => {
           translateX.stopAnimation();
           onSwipeStart();
         },
-        onPanResponderMove: (_event, gestureState) => {
-          const clampedX = Math.max(-SWIPE_MAX_DRAG, Math.min(SWIPE_MAX_DRAG, gestureState.dx));
-          translateX.setValue(clampedX);
+        onPanResponderMove: (_e, gs) => {
+          const clamped = Math.max(-SWIPE_OUT_DISTANCE, Math.min(SWIPE_OUT_DISTANCE, gs.dx));
+          translateX.setValue(clamped);
         },
-        onPanResponderRelease: (_event, gestureState) => {
-          const projectedDx = gestureState.dx;
-
-          if (projectedDx <= -SWIPE_ACTION_THRESHOLD) {
-            completeSwipe(-SWIPE_OUT_DISTANCE, () => onSnooze(task.id));
+        onPanResponderRelease: (_e, gs) => {
+          if (gs.dx > SWIPE_THRESHOLD) {
+            flyOut('right', () => onDone(task.id));
             return;
           }
-
-          if (projectedDx >= SWIPE_ACTION_THRESHOLD) {
-            completeSwipe(SWIPE_OUT_DISTANCE, () => onOpenLead(task));
+          if (gs.dx < -SWIPE_THRESHOLD) {
+            flyOut('left', () => onSnooze(task.id));
             return;
           }
-
           resetPosition();
         },
         onPanResponderTerminate: resetPosition,
         onPanResponderTerminationRequest: () => false,
-        onShouldBlockNativeResponder: () => true
+        onShouldBlockNativeResponder: () => true,
       }),
-    [translateX, task, onOpenLead, onSnooze, onSwipeStart, onSwipeEnd]
+    [translateX, onSwipeStart, onDone, onSnooze, task.id, flyOut, resetPosition]
   );
 
   return (
-    <View style={styles.swipeContainer}>
-      <View style={styles.actionsBackdrop} pointerEvents="none">
-        <View style={[styles.swipeAction, styles.swipeAnswer]}>
-          <Animated.Text style={[styles.swipeActionText, { opacity: answerOpacity, transform: [{ translateX: answerTranslateX }] }]}>
-            Answer Lead
-          </Animated.Text>
-        </View>
-        <View style={[styles.swipeAction, styles.swipeSnooze]}>
-          <Animated.Text style={[styles.swipeActionText, { opacity: snoozeOpacity, transform: [{ translateX: snoozeTranslateX }] }]}>
-            Snooze
-          </Animated.Text>
-        </View>
-      </View>
+    <Animated.View
+      style={[
+        cs.wrapper,
+        { opacity: entranceOpacity, transform: [{ translateY: entranceTranslateY }] },
+      ]}
+    >
+      {/* Full-bleed colored hints that reveal behind the card during drag */}
+      <Animated.View style={[cs.hintFull, cs.hintDone, { opacity: doneHintOpacity }]}>
+        <Feather name="check-circle" size={18} color={colors.white} style={{ marginRight: 6 }} />
+        <Text style={cs.hintLabel}>Done</Text>
+      </Animated.View>
+      <Animated.View style={[cs.hintFull, cs.hintSnooze, { opacity: snoozeHintOpacity }]}>
+        <Feather name="clock" size={18} color={colors.white} style={{ marginRight: 6 }} />
+        <Text style={cs.hintLabel}>Snooze</Text>
+      </Animated.View>
 
+      {/* Draggable card */}
       <Animated.View
-        style={[
-          styles.cardMotion,
-          {
-            transform: [{ translateX }, { translateY }, { rotateZ }]
-          }
-        ]}
+        style={[cs.cardMotion, { transform: [{ translateX }, { rotateZ }] }]}
         {...panResponder.panHandlers}
       >
         <Pressable onPress={() => onOpenLead(task)}>
-          <Card tone={mode} style={styles.taskCard}>
-            <View style={styles.cardHeader}>
-              <View style={styles.identityCluster}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarLabel}>{contactInitial}</Text>
-                </View>
-                <View style={styles.identityTextWrap}>
-                  <Text style={styles.contactHeading} numberOfLines={1}>
-                    {contact}
-                  </Text>
-                  <Text style={styles.taskType}>{formatTaskType(task.type)}</Text>
-                </View>
+          <View style={cs.card}>
+            {/* State pill + due date */}
+            <View style={cs.topRow}>
+              <View style={[cs.pill, { borderColor: stateColor }]}>
+                <Text style={[cs.pillText, { color: stateColor }]}>{task.lead_state}</Text>
               </View>
-              <View style={[styles.statePill, { borderColor: leadStateColor, backgroundColor: colors.surfaceMuted }]}>
-                <Text style={[styles.statePillText, { color: leadStateColor }]}>{task.lead_state}</Text>
+              <Text style={cs.due}>{formatDueDate(task.due_at)}</Text>
+            </View>
+
+            {/* Contact identity */}
+            <View style={cs.identity}>
+              <View style={cs.avatar}>
+                <Text style={cs.avatarLetter}>{contactInitial}</Text>
+              </View>
+              <View style={cs.identityText}>
+                <Text style={cs.contactName} numberOfLines={1}>
+                  {contact}
+                </Text>
+                <Text style={cs.taskType}>{formatTaskType(task.type)}</Text>
               </View>
             </View>
 
-            <Text style={styles.summary} numberOfLines={3}>
+            <Text style={cs.summary} numberOfLines={2}>
               {task.summary ?? 'No summary yet'}
             </Text>
 
-            <View style={styles.metaRow}>
-              <View style={styles.metaChip}>
-                <Text style={styles.metaChipLabel}>Due</Text>
-                <Text style={styles.metaChipValue}>{formatDueDate(task.due_at)}</Text>
-              </View>
-              <View style={styles.metaChip}>
-                <Text style={styles.metaChipLabel}>Lead</Text>
-                <Text style={styles.metaChipValue}>#{task.lead_id.slice(0, 8)}</Text>
-              </View>
-            </View>
-
-            <View style={styles.actions}>
-              <Pressable style={[styles.button, styles.primary]} onPress={() => onDone(task.id)}>
-                <Text style={styles.buttonText}>Done</Text>
+            {/* Action buttons */}
+            <View style={cs.actionsRow}>
+              <Pressable
+                style={[cs.btn, cs.btnDone]}
+                onPress={() => {
+                  reflow();
+                  onDone(task.id);
+                }}
+              >
+                <Text style={cs.btnDoneLabel}>Done</Text>
               </Pressable>
-              <Pressable style={[styles.button, styles.secondary]} onPress={() => onSnooze(task.id)}>
-                <Text style={styles.secondaryButtonText}>Snooze</Text>
+              <Pressable
+                style={[cs.btn, cs.btnSnooze]}
+                onPress={() => {
+                  reflow();
+                  onSnooze(task.id);
+                }}
+              >
+                <Text style={cs.btnSnoozeLabel}>Snooze</Text>
               </Pressable>
-              <Link href={leadHref} style={styles.linkButton}>
-                Open
-              </Link>
+              <Pressable style={[cs.btn, cs.btnOpen]} onPress={() => onOpenLead(task)}>
+                <Text style={cs.btnOpenLabel}>Open →</Text>
+              </Pressable>
             </View>
-          </Card>
+          </View>
         </Pressable>
       </Animated.View>
-    </View>
+    </Animated.View>
   );
 }
 
+/* ────────────────────────────────────────────────────────────
+   Task Deck Screen
+   ──────────────────────────────────────────────────────────── */
+
 export default function TaskDeckScreen(): JSX.Element {
   const { colors, mode } = useTabTheme();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const ss = useMemo(() => screenStyles(colors), [colors]);
   const router = useRouter();
-  const queryClient = useQueryClient();
-  const [activeSwipeCount, setActiveSwipeCount] = useState(0);
+  const qc = useQueryClient();
+  const [swipeCount, setSwipeCount] = useState(0);
+
   const tasks = useQuery({
     queryKey: ['task-deck'],
-    queryFn: () => apiGet<TaskCard[]>('/task-deck')
+    queryFn: () => apiGet<TaskCard[]>('/task-deck'),
   });
 
   const doneMutation = useMutation({
     mutationFn: (taskId: string) => apiPost(`/tasks/${taskId}/done`, {}),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['task-deck'] })
+    onMutate: async (taskId) => {
+      await qc.cancelQueries({ queryKey: ['task-deck'] });
+      const prev = qc.getQueryData<TaskCard[]>(['task-deck']);
+      qc.setQueryData<TaskCard[]>(['task-deck'], (old) => old?.filter((t) => t.id !== taskId));
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['task-deck'], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['task-deck'] }),
   });
 
   const snoozeMutation = useMutation({
     mutationFn: (taskId: string) => apiPost(`/tasks/${taskId}/snooze`, { mode: 'tomorrow' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['task-deck'] })
+    onMutate: async (taskId) => {
+      await qc.cancelQueries({ queryKey: ['task-deck'] });
+      const prev = qc.getQueryData<TaskCard[]>(['task-deck']);
+      qc.setQueryData<TaskCard[]>(['task-deck'], (old) => old?.filter((t) => t.id !== taskId));
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['task-deck'], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['task-deck'] }),
   });
 
   const openCount = tasks.data?.length ?? 0;
-  const atRiskCount = tasks.data?.filter((task) => task.lead_state === 'At-Risk').length ?? 0;
-  const staleCount = tasks.data?.filter((task) => task.lead_state === 'Stale').length ?? 0;
-  const taskDeckErrorMessage =
-    tasks.error instanceof Error ? tasks.error.message : tasks.error ? 'Unknown error' : null;
+  const atRiskCount = tasks.data?.filter((t) => t.lead_state === 'At-Risk').length ?? 0;
+  const staleCount = tasks.data?.filter((t) => t.lead_state === 'Stale').length ?? 0;
   const todayLabel = new Date().toLocaleDateString(undefined, {
     weekday: 'short',
     month: 'short',
-    day: 'numeric'
+    day: 'numeric',
   });
 
   function openLead(task: TaskCard): void {
@@ -317,365 +340,325 @@ export default function TaskDeckScreen(): JSX.Element {
       id: task.lead_id,
       lead_state: task.lead_state,
       task_type: task.type,
-      due_at: task.due_at
+      due_at: task.due_at,
     };
-    if (task.primary_email) {
-      params.primary_email = task.primary_email;
-    }
-    if (task.primary_phone) {
-      params.primary_phone = task.primary_phone;
-    }
-
+    if (task.primary_email) params.primary_email = task.primary_email;
+    if (task.primary_phone) params.primary_phone = task.primary_phone;
     router.push({ pathname: '/lead/[id]', params });
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container} scrollEnabled={activeSwipeCount === 0}>
-      <View style={styles.heroCard}>
-        <View style={styles.heroAccent} />
-        <View style={styles.heroTop}>
-          <Text style={styles.heroEyebrow}>Task Deck</Text>
-          <Text style={styles.heroDate}>{todayLabel}</Text>
-        </View>
-        <Text style={styles.heroTitle}>Execution Queue</Text>
-        <Text style={styles.heroSubtitle}>Prioritize follow-up actions and clear the deck with swipe gestures.</Text>
-
-        <View style={styles.kpiRow}>
-          <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Open</Text>
-            <Text style={styles.kpiValue}>{openCount}</Text>
+    <SafeAreaView style={ss.safeArea} edges={['top']}>
+      <ScrollView contentContainerStyle={ss.container} scrollEnabled={swipeCount === 0}>
+        {/* Hero */}
+        <View style={ss.hero}>
+          <View style={ss.heroTop}>
+            <Text style={ss.heroTitle}>Task Deck</Text>
+            <Text style={ss.heroDate}>{todayLabel}</Text>
           </View>
-          <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>At-Risk</Text>
-            <Text style={[styles.kpiValue, { color: colors.warning }]}>{atRiskCount}</Text>
-          </View>
-          <View style={styles.kpiCard}>
-            <Text style={styles.kpiLabel}>Stale</Text>
-            <Text style={[styles.kpiValue, { color: '#FF7A7A' }]}>{staleCount}</Text>
-          </View>
-        </View>
-
-        <View style={styles.swipeGuideRow}>
-          <View style={[styles.swipeGuideChip, styles.swipeGuideAnswer]}>
-            <Text style={styles.swipeGuideText}>Swipe right: Answer</Text>
-          </View>
-          <View style={[styles.swipeGuideChip, styles.swipeGuideSnooze]}>
-            <Text style={styles.swipeGuideText}>Swipe left: Snooze</Text>
+          <View style={ss.kpiRow}>
+            <View style={ss.kpi}>
+              <Text style={ss.kpiValue}>{openCount}</Text>
+              <Text style={ss.kpiLabel}>Open</Text>
+            </View>
+            <View style={ss.kpi}>
+              <Text style={[ss.kpiValue, { color: colors.warning }]}>{atRiskCount}</Text>
+              <Text style={ss.kpiLabel}>At-Risk</Text>
+            </View>
+            <View style={ss.kpi}>
+              <Text style={[ss.kpiValue, { color: '#FF7A7A' }]}>{staleCount}</Text>
+              <Text style={ss.kpiLabel}>Stale</Text>
+            </View>
           </View>
         </View>
-      </View>
 
-      {tasks.isLoading ? (
-        <Card tone={mode}>
-          <Text style={styles.loading}>Loading task deck...</Text>
-        </Card>
-      ) : null}
+      {/* Loading */}
+      {tasks.isLoading && (
+        <View style={ss.msgCard}>
+          <Text style={ss.msgText}>Loading task deck…</Text>
+        </View>
+      )}
 
-      {tasks.error ? (
-        <Card tone={mode}>
-          <Text style={styles.error}>
+      {/* Error */}
+      {tasks.error && (
+        <View style={ss.msgCard}>
+          <Text style={ss.errText}>
             Unable to load task deck.
-            {taskDeckErrorMessage ? ` (${taskDeckErrorMessage})` : ''}
+            {tasks.error instanceof Error ? ` (${tasks.error.message})` : ''}
           </Text>
-        </Card>
-      ) : null}
+        </View>
+      )}
 
-      {tasks.data?.map((task) => (
+      {/* Cards */}
+      {tasks.data?.map((task, i) => (
         <TaskSwipeCard
           key={task.id}
           task={task}
-          mode={mode}
+          index={i}
           colors={colors}
-          styles={styles}
-          onDone={(taskId) => doneMutation.mutate(taskId)}
-          onSnooze={(taskId) => snoozeMutation.mutate(taskId)}
+          mode={mode}
+          onDone={(id) => doneMutation.mutate(id)}
+          onSnooze={(id) => snoozeMutation.mutate(id)}
           onOpenLead={openLead}
-          onSwipeStart={() => setActiveSwipeCount((count) => count + 1)}
-          onSwipeEnd={() => setActiveSwipeCount((count) => Math.max(0, count - 1))}
+          onSwipeStart={() => setSwipeCount((c) => c + 1)}
+          onSwipeEnd={() => setSwipeCount((c) => Math.max(0, c - 1))}
         />
       ))}
 
-      {!tasks.isLoading && !tasks.error && openCount === 0 ? (
-        <Card tone={mode}>
-          <Text style={styles.emptyTitle}>Deck cleared</Text>
-          <Text style={styles.emptySubtitle}>No open tasks right now. Check back after the next sync.</Text>
-        </Card>
-      ) : null}
-    </ScrollView>
+      {/* Empty state */}
+        {!tasks.isLoading && !tasks.error && openCount === 0 && (
+          <View style={ss.empty}>
+            <Feather name="check-circle" size={36} color={colors.accent} style={{ marginBottom: 12 }} />
+            <Text style={ss.emptyTitle}>Deck Cleared</Text>
+            <Text style={ss.emptySub}>No open tasks right now. Check back after the next sync.</Text>
+          </View>
+        )}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
-function createStyles(colors: TabThemeColors) {
+/* ────────────────────────────────────────────────────────────
+   Card Styles
+   ──────────────────────────────────────────────────────────── */
+
+function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
+  const cardBg = mode === 'dark' ? '#101A2E' : '#F7F9FC';
+  const cardBorder = mode === 'dark' ? '#213452' : '#D4DEEE';
+
   return StyleSheet.create({
-    container: {
-      paddingHorizontal: spacing.lg,
-      paddingTop: spacing.lg,
-      paddingBottom: 120
-    },
-    heroCard: {
-      borderRadius: 22,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-      padding: spacing.lg,
-      marginBottom: spacing.md,
-      position: 'relative',
-      overflow: 'hidden'
-    },
-    heroAccent: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      top: 0,
-      height: 4,
-      backgroundColor: colors.primary
-    },
-    heroTop: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: spacing.sm
-    },
-    heroEyebrow: {
-      color: colors.textSecondary,
-      fontSize: 11,
-      fontWeight: '700',
-      textTransform: 'uppercase',
-      letterSpacing: 0.8
-    },
-    heroDate: {
-      color: colors.textSecondary,
-      fontSize: 12,
-      fontWeight: '700'
-    },
-    heroTitle: {
-      color: colors.text,
-      fontSize: 30,
-      fontWeight: '800',
-      lineHeight: 34
-    },
-    heroSubtitle: {
-      color: colors.textSecondary,
-      marginTop: spacing.xs,
-      lineHeight: 20
-    },
-    kpiRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      marginTop: spacing.md
-    },
-    kpiCard: {
-      flex: 1,
-      backgroundColor: colors.surfaceMuted,
-      borderRadius: 14,
-      borderWidth: 1,
-      borderColor: colors.border,
-      padding: spacing.sm
-    },
-    kpiLabel: {
-      color: colors.textSecondary,
-      fontSize: 10,
-      fontWeight: '700',
-      textTransform: 'uppercase',
-      letterSpacing: 0.5
-    },
-    kpiValue: {
-      color: colors.text,
-      fontSize: 22,
-      fontWeight: '800',
-      marginTop: 4
-    },
-    swipeGuideRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      marginTop: spacing.md
-    },
-    swipeGuideChip: {
-      flex: 1,
-      borderRadius: 11,
-      paddingVertical: 8,
-      paddingHorizontal: 10
-    },
-    swipeGuideAnswer: {
-      backgroundColor: colors.accent
-    },
-    swipeGuideSnooze: {
-      backgroundColor: colors.warning
-    },
-    swipeGuideText: {
-      color: colors.white,
-      fontSize: 11,
-      fontWeight: '700',
-      textAlign: 'center'
-    },
-    loading: {
-      color: colors.text
-    },
-    error: {
-      color: '#FF8A8A'
-    },
-    swipeContainer: {
-      position: 'relative',
+    wrapper: {
+      marginBottom: 12,
       borderRadius: 18,
-      overflow: 'hidden',
-      marginBottom: 12
     },
-    actionsBackdrop: {
+    hintFull: {
       ...StyleSheet.absoluteFillObject,
-      flexDirection: 'row'
+      borderRadius: 18,
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    hintDone: {
+      backgroundColor: colors.accent,
+    },
+    hintSnooze: {
+      backgroundColor: colors.warning,
+    },
+    hintLabel: {
+      color: colors.white,
+      fontWeight: '800',
+      fontSize: 14,
+      letterSpacing: 0.3,
     },
     cardMotion: {
-      borderRadius: 18
+      borderRadius: 18,
     },
-    taskCard: {
-      marginBottom: 0
+    card: {
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: cardBg,
+      padding: 16,
+      shadowColor: '#040915',
+      shadowOpacity: 0.18,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 6,
     },
-    swipeAction: {
-      flex: 1,
-      justifyContent: 'center',
-      paddingHorizontal: spacing.lg
-    },
-    swipeAnswer: {
-      backgroundColor: colors.accent,
-      alignItems: 'flex-start'
-    },
-    swipeSnooze: {
-      backgroundColor: colors.warning,
-      alignItems: 'flex-end'
-    },
-    swipeActionText: {
-      color: colors.white,
-      fontWeight: '800',
-      fontSize: 13
-    },
-    cardHeader: {
+    topRow: {
       flexDirection: 'row',
       justifyContent: 'space-between',
-      alignItems: 'flex-start'
+      alignItems: 'center',
+      marginBottom: 12,
     },
-    identityCluster: {
+    pill: {
+      borderRadius: 999,
+      borderWidth: 1,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      backgroundColor: colors.surfaceMuted,
+    },
+    pillText: {
+      fontSize: 11,
+      fontWeight: '700',
+    },
+    due: {
+      color: colors.textSecondary,
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    identity: {
       flexDirection: 'row',
       alignItems: 'center',
-      flex: 1,
-      marginRight: spacing.sm
+      marginBottom: 8,
     },
     avatar: {
-      width: 36,
-      height: 36,
-      borderRadius: 999,
+      width: 34,
+      height: 34,
+      borderRadius: 17,
       backgroundColor: colors.cardMuted,
       borderWidth: 1,
       borderColor: colors.border,
       alignItems: 'center',
       justifyContent: 'center',
-      marginRight: spacing.sm
+      marginRight: spacing.sm,
     },
-    avatarLabel: {
+    avatarLetter: {
       color: colors.text,
-      fontWeight: '800'
-    },
-    identityTextWrap: {
-      flex: 1
-    },
-    contactHeading: {
-      color: colors.text,
+      fontWeight: '800',
       fontSize: 14,
-      fontWeight: '800'
+    },
+    identityText: {
+      flex: 1,
+    },
+    contactName: {
+      color: colors.text,
+      fontSize: 15,
+      fontWeight: '700',
     },
     taskType: {
       color: colors.textSecondary,
-      marginTop: 2,
       fontSize: 12,
-      fontWeight: '700'
-    },
-    statePill: {
-      borderRadius: 999,
-      borderWidth: 1,
-      paddingHorizontal: 10,
-      paddingVertical: 5
-    },
-    statePillText: {
-      fontSize: 11,
-      fontWeight: '800'
+      fontWeight: '600',
+      marginTop: 1,
     },
     summary: {
-      color: colors.text,
-      marginTop: spacing.sm,
-      fontSize: 15,
-      lineHeight: 22
-    },
-    metaRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      marginTop: spacing.md
-    },
-    metaChip: {
-      flex: 1,
-      backgroundColor: colors.surfaceMuted,
-      borderColor: colors.border,
-      borderWidth: 1,
-      borderRadius: 10,
-      paddingHorizontal: 10,
-      paddingVertical: 8
-    },
-    metaChipLabel: {
       color: colors.textSecondary,
-      fontSize: 10,
-      fontWeight: '700',
-      textTransform: 'uppercase',
-      letterSpacing: 0.4
+      fontSize: 14,
+      lineHeight: 20,
+      marginBottom: 12,
     },
-    metaChipValue: {
-      color: colors.text,
-      marginTop: 3,
-      fontSize: 12,
-      fontWeight: '700'
-    },
-    actions: {
-      marginTop: spacing.md,
+    actionsRow: {
       flexDirection: 'row',
       gap: spacing.sm,
-      alignItems: 'center'
+      alignItems: 'center',
     },
-    button: {
+    btn: {
       paddingHorizontal: 14,
-      paddingVertical: 10,
-      borderRadius: 10
-    },
-    primary: {
-      backgroundColor: colors.primary
-    },
-    secondary: {
-      backgroundColor: colors.cardMuted
-    },
-    buttonText: {
-      color: colors.white,
-      fontWeight: '700'
-    },
-    secondaryButtonText: {
-      color: colors.text,
-      fontWeight: '700'
-    },
-    linkButton: {
-      backgroundColor: colors.surfaceMuted,
-      borderColor: colors.border,
-      borderWidth: 1,
+      paddingVertical: 9,
       borderRadius: 10,
+    },
+    btnDone: {
+      backgroundColor: colors.accent,
+    },
+    btnDoneLabel: {
+      color: colors.white,
+      fontWeight: '700',
+      fontSize: 13,
+    },
+    btnSnooze: {
+      backgroundColor: colors.cardMuted,
+    },
+    btnSnoozeLabel: {
       color: colors.text,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      overflow: 'hidden',
-      fontWeight: '700'
+      fontWeight: '700',
+      fontSize: 13,
+    },
+    btnOpen: {
+      marginLeft: 'auto',
+      backgroundColor: colors.surfaceMuted,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    btnOpenLabel: {
+      color: colors.text,
+      fontWeight: '700',
+      fontSize: 13,
+    },
+  });
+}
+
+/* ────────────────────────────────────────────────────────────
+   Screen Styles
+   ──────────────────────────────────────────────────────────── */
+
+function screenStyles(colors: TabThemeColors) {
+  return StyleSheet.create({
+    container: {
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+      paddingBottom: 120,
+    },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    hero: {
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      marginBottom: spacing.md,
+    },
+    heroTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: spacing.sm,
+    },
+    heroDate: {
+      color: colors.textSecondary,
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    heroTitle: {
+      color: colors.text,
+      fontSize: 18,
+      fontWeight: '700',
+    },
+    kpiRow: {
+      flexDirection: 'row',
+      gap: spacing.md,
+      marginTop: 2,
+    },
+    kpi: {
+      flex: 1,
+      alignItems: 'flex-start',
+    },
+    kpiLabel: {
+      color: colors.textSecondary,
+      fontSize: 11,
+      fontWeight: '600',
+    },
+    kpiValue: {
+      color: colors.text,
+      fontSize: 18,
+      fontWeight: '700',
+    },
+    msgCard: {
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      padding: 16,
+      marginBottom: 12,
+    },
+    msgText: {
+      color: colors.text,
+    },
+    errText: {
+      color: '#FF8A8A',
+    },
+    empty: {
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      padding: 32,
+      alignItems: 'center',
     },
     emptyTitle: {
       color: colors.text,
-      fontSize: 16,
-      fontWeight: '800'
+      fontSize: 18,
+      fontWeight: '800',
     },
-    emptySubtitle: {
+    emptySub: {
       color: colors.textSecondary,
       marginTop: spacing.xs,
-      lineHeight: 20
-    }
+      lineHeight: 20,
+      textAlign: 'center',
+    },
   });
 }
