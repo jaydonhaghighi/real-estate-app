@@ -6,15 +6,21 @@
     "orientation": "portrait",
     "scheme": "messagingmvp",
     "userInterfaceStyle": "light",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jaydon-haghighi.messagingmvp"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#F5F2E8"
-      }
+      },
+      "package": "com.jaydon_haghighi.messagingmvp"
     },
-    "plugins": ["expo-router"]
+    "plugins": [
+      "expo-router"
+    ]
   }
 }

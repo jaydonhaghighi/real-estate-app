@@ -40,12 +40,21 @@ fi
 blue "Starting PostgreSQL and Redis via Docker..."
 docker compose up -d
 
-blue "Waiting for PostgreSQL to be ready..."
+blue "Waiting for PostgreSQL to be ready (inside container)..."
 for i in $(seq 1 30); do
   if docker compose exec -T postgres pg_isready -U postgres >/dev/null 2>&1; then
     break
   fi
   [ "$i" -eq 30 ] && fail "PostgreSQL did not start in time"
+  sleep 1
+done
+
+blue "Waiting for PostgreSQL to be reachable on host (localhost:5432)..."
+for i in $(seq 1 30); do
+  if (echo >/dev/tcp/localhost/5432) 2>/dev/null; then
+    break
+  fi
+  [ "$i" -eq 30 ] && fail "PostgreSQL is not reachable on localhost:5432. Port may be in use by another process. Try: docker compose down && lsof -i :5432"
   sleep 1
 done
 green "PostgreSQL is ready."
