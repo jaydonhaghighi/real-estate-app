@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PoolClient } from 'pg';
 import { createHmac, timingSafeEqual } from 'crypto';
+import { EscalationRules, escalationRuleSchema } from '@mvp/shared-types';
 
 import { RawContentCryptoService } from '../../common/crypto/raw-content-crypto.service';
 import { DatabaseService } from '../../common/db/database.service';
@@ -40,6 +41,11 @@ interface CallWebhookPayload {
   timestamp?: string | undefined;
 }
 
+interface BrokerIntakeSettings {
+  mailbox_connection_ids: string[];
+  phone_number_ids: string[];
+}
+
 @Injectable()
 export class WebhooksService {
   constructor(
@@ -56,11 +62,20 @@ export class WebhooksService {
         return { accepted: false, deduped: false };
       }
 
+      const brokerIntake = await this.getBrokerIntakeSettings(client, mailbox.team_id);
+      const isBrokerChannel = brokerIntake.mailbox_connection_ids.includes(mailbox.id);
+      const ownerAgentId = isBrokerChannel ? await this.resolveTeamLead(client, mailbox.team_id) : mailbox.user_id;
+
       const lead = await this.leadsService.findOrCreateLeadByEmail(client, {
         teamId: mailbox.team_id,
-        ownerAgentId: mailbox.user_id,
+        ownerAgentId,
         email: payload.from_email.toLowerCase(),
-        source: 'email'
+        source: 'email',
+        provenance: {
+          intake_origin: isBrokerChannel ? 'broker_channel' : 'agent_direct',
+          intake_channel_ref: { mailbox_connection_id: mailbox.id },
+          broker_assigned: false
+        }
       });
 
       const insertResult = await client.query(
@@ -125,13 +140,22 @@ export class WebhooksService {
         return { accepted: false, deduped: false };
       }
 
-      const ownerAgentId = await this.resolveDefaultAgent(client, phone.team_id);
+      const brokerIntake = await this.getBrokerIntakeSettings(client, phone.team_id);
+      const isBrokerChannel = brokerIntake.phone_number_ids.includes(phone.id);
+      const ownerAgentId = isBrokerChannel
+        ? await this.resolveTeamLead(client, phone.team_id)
+        : await this.resolveDefaultAgent(client, phone.team_id);
 
       const lead = await this.leadsService.findOrCreateLeadByPhone(client, {
         teamId: phone.team_id,
         ownerAgentId,
         phone: payload.from_number,
-        source: 'sms'
+        source: 'sms',
+        provenance: {
+          intake_origin: isBrokerChannel ? 'broker_channel' : 'agent_direct',
+          intake_channel_ref: { phone_number_id: phone.id },
+          broker_assigned: false
+        }
       });
 
       const insertResult = await client.query(
@@ -192,13 +216,22 @@ export class WebhooksService {
         return { accepted: false, deduped: false };
       }
 
-      const ownerAgentId = await this.resolveDefaultAgent(client, phone.team_id);
+      const brokerIntake = await this.getBrokerIntakeSettings(client, phone.team_id);
+      const isBrokerChannel = brokerIntake.phone_number_ids.includes(phone.id);
+      const ownerAgentId = isBrokerChannel
+        ? await this.resolveTeamLead(client, phone.team_id)
+        : await this.resolveDefaultAgent(client, phone.team_id);
 
       const lead = await this.leadsService.findOrCreateLeadByPhone(client, {
         teamId: phone.team_id,
         ownerAgentId,
         phone: payload.from_number,
-        source: 'call'
+        source: 'call',
+        provenance: {
+          intake_origin: isBrokerChannel ? 'broker_channel' : 'agent_direct',
+          intake_channel_ref: { phone_number_id: phone.id },
+          broker_assigned: false
+        }
       });
 
       const insertResult = await client.query(
@@ -243,6 +276,10 @@ export class WebhooksService {
 
       if (!insertResult.rowCount) {
         return { accepted: true, deduped: true, lead_id: lead.id };
+      }
+
+      if (payload.direction === 'inbound') {
+        await this.ensureInboundTask(client, lead.id, lead.owner_agent_id);
       }
 
       return { accepted: true, deduped: false, lead_id: lead.id };
@@ -323,6 +360,42 @@ export class WebhooksService {
     }
 
     return result.rows[0].id as string;
+  }
+
+  private async resolveTeamLead(client: PoolClient, teamId: string): Promise<string> {
+    const result = await client.query(
+      `SELECT id
+       FROM "User"
+       WHERE team_id = $1 AND role = 'TEAM_LEAD'
+       ORDER BY id
+       LIMIT 1`,
+      [teamId]
+    );
+
+    if (!result.rowCount || !result.rows[0]) {
+      throw new Error(`No team lead found in team ${teamId}`);
+    }
+
+    return result.rows[0].id as string;
+  }
+
+  private async getBrokerIntakeSettings(client: PoolClient, teamId: string): Promise<BrokerIntakeSettings> {
+    const result = await client.query(
+      `SELECT escalation_rules
+       FROM "Team"
+       WHERE id = $1`,
+      [teamId]
+    );
+
+    if (!result.rowCount || !result.rows[0]) {
+      return { mailbox_connection_ids: [], phone_number_ids: [] };
+    }
+
+    const rules = escalationRuleSchema.parse(result.rows[0].escalation_rules as EscalationRules);
+    return {
+      mailbox_connection_ids: rules.broker_intake.mailbox_connection_ids,
+      phone_number_ids: rules.broker_intake.phone_number_ids
+    };
   }
 
   private async ensureInboundTask(client: PoolClient, leadId: string, ownerId: string): Promise<void> {

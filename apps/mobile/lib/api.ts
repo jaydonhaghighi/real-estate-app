@@ -1,7 +1,69 @@
 import Constants from 'expo-constants';
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string>;
-const apiBaseUrl = extra.API_BASE_URL ?? process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:3001/v1';
+
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+function inferDevHost(): string | null {
+  const hostUri = Constants.expoConfig?.hostUri;
+  if (hostUri) {
+    return hostUri.split(':')[0] ?? null;
+  }
+
+  if (Constants.linkingUri) {
+    try {
+      const linkingUrl = new URL(Constants.linkingUri);
+      if (linkingUrl.hostname) {
+        return linkingUrl.hostname;
+      }
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function withDefaultV1Path(pathname: string): string {
+  if (!pathname || pathname === '/') {
+    return '/v1';
+  }
+  return pathname.endsWith('/v1') ? pathname : `${pathname.replace(/\/+$/, '')}/v1`;
+}
+
+function resolveApiBaseUrl(): string {
+  const raw = (extra.API_BASE_URL ?? process.env.EXPO_PUBLIC_API_BASE_URL ?? '').trim();
+  const fallbackHost = inferDevHost() ?? 'localhost';
+
+  if (!raw) {
+    return `http://${fallbackHost}:3001/v1`;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const inferredHost = inferDevHost();
+
+    // "localhost:8081" usually points to Metro, not API.
+    if (parsed.port === '8081') {
+      parsed.port = '3001';
+      parsed.pathname = '/v1';
+    }
+
+    // On physical devices, localhost points to phone itself; prefer dev host.
+    if (inferredHost && !isLoopbackHost(inferredHost) && isLoopbackHost(parsed.hostname)) {
+      parsed.hostname = inferredHost;
+    }
+
+    parsed.pathname = withDefaultV1Path(parsed.pathname);
+    return parsed.toString().replace(/\/+$/, '');
+  } catch (_error) {
+    return `http://${fallbackHost}:3001/v1`;
+  }
+}
+
+const apiBaseUrl = resolveApiBaseUrl();
 
 let _getToken: (() => Promise<string | null>) | null = null;
 
@@ -9,7 +71,41 @@ export function setTokenProvider(fn: () => Promise<string | null>): void {
   _getToken = fn;
 }
 
+function devHeaderValue(key: string): string | undefined {
+  const extraValue = extra[key];
+  if (typeof extraValue === 'string' && extraValue.trim().length > 0) {
+    return extraValue.trim();
+  }
+
+  const envValue = process.env[`EXPO_PUBLIC_${key}`];
+  if (typeof envValue === 'string' && envValue.trim().length > 0) {
+    return envValue.trim();
+  }
+
+  return undefined;
+}
+
+function devAuthHeaders(): Record<string, string> {
+  const userId = devHeaderValue('DEV_USER_ID');
+  const teamId = devHeaderValue('DEV_TEAM_ID');
+  const role = devHeaderValue('DEV_ROLE');
+  if (!userId || !teamId || !role) {
+    return {};
+  }
+
+  return {
+    'x-user-id': userId,
+    'x-team-id': teamId,
+    'x-role': role
+  };
+}
+
 async function authHeaders(): Promise<Record<string, string>> {
+  const fallbackHeaders = devAuthHeaders();
+  if (Object.keys(fallbackHeaders).length > 0) {
+    return fallbackHeaders;
+  }
+
   if (_getToken) {
     const token = await _getToken();
     if (token) {

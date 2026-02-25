@@ -43,25 +43,47 @@ export class AuthGuard implements CanActivate {
 
     const authHeader = request.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
-      request.user = await this.validateJwt(authHeader.slice(7));
-      return true;
+      try {
+        request.user = await this.validateJwt(authHeader.slice(7));
+        return true;
+      } catch (error) {
+        if (this.configService.get<string>('NODE_ENV') !== 'production') {
+          const devUser = this.parseDevHeaderUser(request.headers);
+          if (devUser) {
+            request.user = devUser;
+            return true;
+          }
+        }
+        throw error;
+      }
     }
 
     if (this.configService.get<string>('NODE_ENV') !== 'production') {
-      const userId = request.headers['x-user-id'];
-      const teamId = request.headers['x-team-id'];
-      const role = request.headers['x-role'];
-      if (
-        typeof userId === 'string'
-        && typeof teamId === 'string'
-        && (role === 'AGENT' || role === 'TEAM_LEAD')
-      ) {
-        request.user = { userId, teamId, role };
+      const devUser = this.parseDevHeaderUser(request.headers);
+      if (devUser) {
+        request.user = devUser;
         return true;
       }
     }
 
     throw new UnauthorizedException('Authentication required');
+  }
+
+  private parseDevHeaderUser(
+    headers: Record<string, string | string[] | undefined>
+  ): UserContext | null {
+    const userId = headers['x-user-id'];
+    const teamId = headers['x-team-id'];
+    const role = headers['x-role'];
+    if (
+      typeof userId === 'string'
+      && typeof teamId === 'string'
+      && (role === 'AGENT' || role === 'TEAM_LEAD')
+    ) {
+      return { userId, teamId, role };
+    }
+
+    return null;
   }
 
   private async validateJwt(token: string): Promise<UserContext> {

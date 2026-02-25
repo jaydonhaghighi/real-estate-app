@@ -80,3 +80,4 @@ docs/
 - `pnpm test` - run unit tests
 - `pnpm db:migrate` - run DB migrations
 - `pnpm db:seed` - seed local database
+- `pnpm db:seed:admin` - seed Team Lead admin routing queues (intake/assigned/reassign)

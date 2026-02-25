@@ -55,6 +55,40 @@ export class TeamController {
     return this.teamService.getSlaDashboard(user);
   }
 
+  @Get('rules')
+  async getRules(@CurrentUser() user: UserContext): Promise<Record<string, unknown>> {
+    return this.teamService.getRules(user);
+  }
+
+  @Get('admin/agents')
+  async getAssignableAgents(@CurrentUser() user: UserContext): Promise<{ id: string; role: string; language: string }[]> {
+    return this.teamService.getAssignableAgents(user);
+  }
+
+  @Get('admin/intake-queue')
+  async getAdminIntakeQueue(@CurrentUser() user: UserContext): Promise<Record<string, unknown>[]> {
+    return this.teamService.getAdminIntakeQueue(user);
+  }
+
+  @Get('admin/assigned-queue')
+  async getAdminAssignedQueue(@CurrentUser() user: UserContext): Promise<Record<string, unknown>[]> {
+    return this.teamService.getAdminAssignedQueue(user);
+  }
+
+  @Get('admin/reassign-queue')
+  async getAdminReassignQueue(@CurrentUser() user: UserContext): Promise<Record<string, unknown>[]> {
+    return this.teamService.getAdminReassignQueue(user);
+  }
+
+  @Post('admin/tasks/:taskId/assign')
+  async assignAdminTask(
+    @CurrentUser() user: UserContext,
+    @Param('taskId') taskId: string,
+    @Body() body: unknown
+  ): Promise<{ task_id: string; lead_id: string; owner_agent_id: string }> {
+    return this.teamService.assignBrokerTask(user, taskId, body);
+  }
+
   @Put('rules')
   async putRules(@CurrentUser() user: UserContext, @Body() body: unknown): Promise<Record<string, unknown>> {
     return this.teamService.updateRules(user, body);

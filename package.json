@@ -15,6 +15,7 @@
     "typecheck": "turbo run typecheck",
     "db:migrate": "pnpm --filter @mvp/db migrate",
     "db:seed": "pnpm --filter @mvp/db seed",
+    "db:seed:admin": "pnpm --filter @mvp/db seed:admin",
     "format": "turbo run format"
   },
   "devDependencies": {

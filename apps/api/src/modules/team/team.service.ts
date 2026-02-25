@@ -1,15 +1,49 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   EscalationRules,
+  brokerIntakeRuleSchema,
   escalationRuleSchema,
   slaRuleSchema,
   staleRuleSchema,
   templateCreateSchema
 } from '@mvp/shared-types';
 import { v4 as uuidv4 } from 'uuid';
+import { z } from 'zod';
+import { PoolClient } from 'pg';
 
 import { DatabaseService } from '../../common/db/database.service';
 import { UserContext } from '../../common/auth/user-context';
+
+interface AdminLeadQueueRow {
+  task_id: string | null;
+  lead_id: string;
+  task_type: string | null;
+  task_status: string | null;
+  due_at: string | null;
+  lead_state: string;
+  owner_agent_id: string;
+  primary_email: string | null;
+  primary_phone: string | null;
+  summary: string | null;
+  language: string | null;
+  fields_json: Record<string, unknown> | null;
+}
+
+interface AssignableAgentRow {
+  id: string;
+  role: 'AGENT';
+  language: string;
+}
+
+const assignBrokerTaskSchema = z.object({
+  assignee_user_id: z.string().uuid(),
+  reason: z.string().min(1).max(500)
+});
+
+const teamRuleUpdateSchema = staleRuleSchema
+  .partial()
+  .merge(slaRuleSchema.partial())
+  .merge(z.object({ broker_intake: brokerIntakeRuleSchema.partial().optional() }));
 
 @Injectable()
 export class TeamService {
@@ -175,9 +209,301 @@ export class TeamService {
     });
   }
 
-  async updateRules(user: UserContext, payload: unknown): Promise<Record<string, unknown>> {
-    const ruleSchema = staleRuleSchema.and(slaRuleSchema.partial());
+  async getRules(user: UserContext): Promise<Record<string, unknown>> {
+    return this.databaseService.withUserTransaction(user, async (client) => {
+      const result = await client.query(
+        `SELECT stale_rules, sla_rules, escalation_rules
+         FROM "Team"
+         WHERE id = $1`,
+        [user.teamId]
+      );
 
+      if (!result.rowCount || !result.rows[0]) {
+        throw new NotFoundException('Team not found');
+      }
+
+      const staleRules = staleRuleSchema.parse(result.rows[0].stale_rules);
+      const slaRules = slaRuleSchema.parse(result.rows[0].sla_rules);
+      const escalationRules = escalationRuleSchema.parse(result.rows[0].escalation_rules as EscalationRules);
+
+      return {
+        stale_rules: staleRules,
+        sla_rules: slaRules,
+        escalation_rules: escalationRules
+      };
+    });
+  }
+
+  async getAssignableAgents(user: UserContext): Promise<AssignableAgentRow[]> {
+    return this.databaseService.withUserTransaction(user, async (client) => {
+      const result = await client.query<AssignableAgentRow>(
+        `SELECT id, role, language
+         FROM "User"
+         WHERE team_id = $1
+           AND role = 'AGENT'
+         ORDER BY id`,
+        [user.teamId]
+      );
+
+      return result.rows;
+    });
+  }
+
+  async getAdminIntakeQueue(user: UserContext): Promise<Record<string, unknown>[]> {
+    return this.databaseService.withUserTransaction(user, async (client) => {
+      const result = await client.query<AdminLeadQueueRow>(
+        `SELECT t.id AS task_id,
+                l.id AS lead_id,
+                t.type AS task_type,
+                t.status AS task_status,
+                t.due_at,
+                l.state AS lead_state,
+                l.owner_agent_id,
+                l.primary_email,
+                l.primary_phone,
+                d.summary,
+                d.language,
+                d.fields_json
+         FROM "Task" t
+         JOIN "Lead" l ON l.id = t.lead_id
+         LEFT JOIN "DerivedLeadProfile" d ON d.lead_id = l.id
+         WHERE l.team_id = $1
+           AND t.status = 'open'
+           AND t.owner_id = $2
+           AND l.state IN ('New', 'Active', 'At-Risk')
+           AND COALESCE(d.fields_json->>'intake_origin', 'agent_direct') = 'broker_channel'
+           AND COALESCE((d.fields_json->>'broker_assigned')::boolean, false) = false
+         ORDER BY t.due_at ASC
+         LIMIT 200`,
+        [user.teamId, user.userId]
+      );
+
+      const queue: Record<string, unknown>[] = [];
+      for (const row of result.rows) {
+        const latestEvent = await this.getLatestEventMetadata(client, row.lead_id);
+        queue.push({
+          ...row,
+          intake_origin: 'broker_channel',
+          latest_event: latestEvent
+        });
+      }
+
+      return queue;
+    });
+  }
+
+  async getAdminAssignedQueue(user: UserContext): Promise<Record<string, unknown>[]> {
+    return this.databaseService.withUserTransaction(user, async (client) => {
+      const result = await client.query<AdminLeadQueueRow>(
+        `SELECT nt.task_id,
+                l.id AS lead_id,
+                nt.task_type,
+                nt.task_status,
+                nt.due_at,
+                l.state AS lead_state,
+                l.owner_agent_id,
+                l.primary_email,
+                l.primary_phone,
+                d.summary,
+                d.language,
+                d.fields_json
+         FROM "Lead" l
+         LEFT JOIN "DerivedLeadProfile" d ON d.lead_id = l.id
+         LEFT JOIN LATERAL (
+           SELECT t.id AS task_id,
+                  t.type AS task_type,
+                  t.status AS task_status,
+                  t.due_at
+           FROM "Task" t
+           WHERE t.lead_id = l.id
+             AND t.status = 'open'
+           ORDER BY t.due_at ASC
+           LIMIT 1
+         ) nt ON true
+         WHERE l.team_id = $1
+           AND l.state IN ('New', 'Active', 'At-Risk')
+           AND COALESCE(d.fields_json->>'intake_origin', 'agent_direct') = 'broker_channel'
+           AND COALESCE((d.fields_json->>'broker_assigned')::boolean, false) = true
+         ORDER BY COALESCE(nt.due_at, l.updated_at) ASC
+         LIMIT 200`,
+        [user.teamId]
+      );
+
+      const queue: Record<string, unknown>[] = [];
+      for (const row of result.rows) {
+        const latestEvent = await this.getLatestEventMetadata(client, row.lead_id);
+        queue.push({
+          ...row,
+          intake_origin: 'broker_channel',
+          latest_event: latestEvent
+        });
+      }
+
+      return queue;
+    });
+  }
+
+  async getAdminReassignQueue(user: UserContext): Promise<Record<string, unknown>[]> {
+    return this.databaseService.withUserTransaction(user, async (client) => {
+      const result = await client.query<AdminLeadQueueRow>(
+        `SELECT nt.task_id,
+                l.id AS lead_id,
+                nt.task_type,
+                nt.task_status,
+                nt.due_at,
+                l.state AS lead_state,
+                l.owner_agent_id,
+                l.primary_email,
+                l.primary_phone,
+                d.summary,
+                d.language,
+                d.fields_json
+         FROM "Lead" l
+         LEFT JOIN "DerivedLeadProfile" d ON d.lead_id = l.id
+         LEFT JOIN LATERAL (
+           SELECT t.id AS task_id,
+                  t.type AS task_type,
+                  t.status AS task_status,
+                  t.due_at
+           FROM "Task" t
+           WHERE t.lead_id = l.id
+             AND t.status = 'open'
+             AND t.type = 'rescue'
+           ORDER BY t.due_at ASC
+           LIMIT 1
+         ) nt ON true
+         WHERE l.team_id = $1
+           AND l.state = 'Stale'
+           AND COALESCE(d.fields_json->>'intake_origin', 'agent_direct') = 'broker_channel'
+           AND COALESCE((d.fields_json->>'broker_assigned')::boolean, false) = true
+         ORDER BY COALESCE(nt.due_at, l.updated_at) ASC
+         LIMIT 200`,
+        [user.teamId]
+      );
+
+      const queue: Record<string, unknown>[] = [];
+      for (const row of result.rows) {
+        const latestEvent = await this.getLatestEventMetadata(client, row.lead_id);
+        queue.push({
+          ...row,
+          intake_origin: 'broker_channel',
+          latest_event: latestEvent
+        });
+      }
+
+      return queue;
+    });
+  }
+
+  async assignBrokerTask(
+    user: UserContext,
+    taskId: string,
+    payload: unknown
+  ): Promise<{ task_id: string; lead_id: string; owner_agent_id: string }> {
+    const parsed = assignBrokerTaskSchema.parse(payload);
+
+    return this.databaseService.withUserTransaction(user, async (client) => {
+      const task = await client.query<AdminLeadQueueRow>(
+        `SELECT t.id AS task_id,
+                l.id AS lead_id,
+                t.type AS task_type,
+                t.status AS task_status,
+                t.due_at,
+                l.state AS lead_state,
+                l.owner_agent_id,
+                l.primary_email,
+                l.primary_phone,
+                d.summary,
+                d.language,
+                d.fields_json
+         FROM "Task" t
+         JOIN "Lead" l ON l.id = t.lead_id
+         LEFT JOIN "DerivedLeadProfile" d ON d.lead_id = l.id
+         WHERE t.id = $1
+           AND l.team_id = $2
+         LIMIT 1`,
+        [taskId, user.teamId]
+      );
+
+      if (!task.rowCount || !task.rows[0]) {
+        throw new NotFoundException('Task not found');
+      }
+
+      if (task.rows[0].task_status !== 'open') {
+        throw new ForbiddenException('Only open tasks can be assigned');
+      }
+
+      const intakeOrigin = String(task.rows[0].fields_json?.intake_origin ?? 'agent_direct');
+      if (intakeOrigin !== 'broker_channel') {
+        throw new ForbiddenException('Only broker-channel leads can be assigned from admin queue');
+      }
+
+      const assignee = await client.query<AssignableAgentRow>(
+        `SELECT id, role, language
+         FROM "User"
+         WHERE id = $1
+           AND team_id = $2
+           AND role = 'AGENT'
+         LIMIT 1`,
+        [parsed.assignee_user_id, user.teamId]
+      );
+
+      if (!assignee.rowCount || !assignee.rows[0]) {
+        throw new NotFoundException('Assignee not found');
+      }
+
+      const assignedAt = new Date().toISOString();
+      const currentFields = task.rows[0].fields_json ?? {};
+      const nextFields = {
+        ...currentFields,
+        intake_origin: 'broker_channel',
+        broker_assigned: true,
+        assigned_by_team_lead_id: user.userId,
+        assigned_owner_id: parsed.assignee_user_id,
+        assigned_at: assignedAt
+      };
+
+      await client.query(
+        `UPDATE "Lead"
+         SET owner_agent_id = $2,
+             updated_at = now()
+         WHERE id = $1`,
+        [task.rows[0].lead_id, parsed.assignee_user_id]
+      );
+
+      await client.query(
+        `UPDATE "Task"
+         SET owner_id = $2
+         WHERE lead_id = $1
+           AND status = 'open'`,
+        [task.rows[0].lead_id, parsed.assignee_user_id]
+      );
+
+      await client.query(
+        `INSERT INTO "DerivedLeadProfile" (lead_id, summary, language, fields_json, metrics_json, updated_at)
+         VALUES ($1, 'New lead awaiting first contact.', 'en', $2::jsonb, '{}'::jsonb, now())
+         ON CONFLICT (lead_id)
+         DO UPDATE
+         SET fields_json = $2::jsonb,
+             updated_at = now()`,
+        [task.rows[0].lead_id, JSON.stringify(nextFields)]
+      );
+
+      await client.query(
+        `INSERT INTO "AuditLog" (actor_id, lead_id, action, reason)
+         VALUES ($1, $2, 'BROKER_TASK_ASSIGN', $3)`,
+        [user.userId, task.rows[0].lead_id, parsed.reason]
+      );
+
+      return {
+        task_id: taskId,
+        lead_id: task.rows[0].lead_id,
+        owner_agent_id: parsed.assignee_user_id
+      };
+    });
+  }
+
+  async updateRules(user: UserContext, payload: unknown): Promise<Record<string, unknown>> {
     return this.databaseService.withUserTransaction(user, async (client) => {
       const teamResult = await client.query(
         'SELECT stale_rules, sla_rules, escalation_rules FROM "Team" WHERE id = $1',
@@ -189,27 +515,57 @@ export class TeamService {
       }
 
       const current = teamResult.rows[0];
-      const staleRules = staleRuleSchema.parse({ ...(current.stale_rules as object), ...(payload as object) });
+      const override = teamRuleUpdateSchema.parse(payload);
+      const stalePatch = staleRuleSchema.partial().parse(override);
+      const slaPatch = slaRuleSchema.partial().parse(override);
+
+      const staleRules = staleRuleSchema.parse({ ...(current.stale_rules as object), ...stalePatch });
       const existingSla = slaRuleSchema.parse(current.sla_rules);
-      const override = ruleSchema.parse(payload);
       const nextSlaRules = {
         ...existingSla,
-        ...override
+        ...slaPatch
+      };
+      const existingEscalation = escalationRuleSchema.parse(current.escalation_rules as EscalationRules);
+      const nextBrokerIntake = override.broker_intake
+        ? brokerIntakeRuleSchema.parse({
+            ...existingEscalation.broker_intake,
+            ...override.broker_intake
+          })
+        : existingEscalation.broker_intake;
+      const nextEscalationRules = {
+        ...existingEscalation,
+        broker_intake: nextBrokerIntake
       };
 
       await client.query(
         `UPDATE "Team"
          SET stale_rules = $2::jsonb,
-             sla_rules = $3::jsonb
+             sla_rules = $3::jsonb,
+             escalation_rules = $4::jsonb
          WHERE id = $1`,
-        [user.teamId, JSON.stringify(staleRules), JSON.stringify(nextSlaRules)]
+        [user.teamId, JSON.stringify(staleRules), JSON.stringify(nextSlaRules), JSON.stringify(nextEscalationRules)]
       );
 
       return {
         stale_rules: staleRules,
         sla_rules: nextSlaRules,
-        escalation_rules: current.escalation_rules
+        escalation_rules: nextEscalationRules
       };
     });
+  }
+
+  private async getLatestEventMetadata(
+    client: PoolClient,
+    leadId: string
+  ): Promise<Record<string, unknown> | null> {
+    const result = await client.query(
+      `SELECT id, channel, type, direction, created_at
+       FROM team_event_metadata($1)
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [leadId]
+    );
+
+    return result.rows[0] ?? null;
   }
 }

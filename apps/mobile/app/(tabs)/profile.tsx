@@ -5,6 +5,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Card } from '../../components/card';
+import { useCurrentUser } from '../../lib/current-user';
 import { spacing } from '../../lib/theme';
 import { TabThemeColors, useTabTheme } from '../../lib/tab-theme';
 
@@ -13,6 +14,8 @@ export default function ProfileScreen(): JSX.Element {
   const styles = useMemo(() => createStyles(colors), [colors]);
   const { user } = useUser();
   const { signOut } = useClerk();
+  const currentUser = useCurrentUser();
+  const isTeamLead = currentUser.effectiveRole === 'TEAM_LEAD';
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -61,6 +64,11 @@ export default function ProfileScreen(): JSX.Element {
           <Link href="/templates" style={styles.actionLink}>
             Templates
           </Link>
+          {isTeamLead ? (
+            <Link href="/admin-hub" style={styles.actionLink}>
+              Admin
+            </Link>
+          ) : null}
           <Link href="/compose" style={styles.actionLink}>
             Compose
           </Link>

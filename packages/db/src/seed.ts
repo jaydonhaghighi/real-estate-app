@@ -84,7 +84,12 @@ const defaultEscalationRules = {
       ],
       updated_at: escalationUpdatedAt
     }
-  ]
+  ],
+  broker_intake: {
+    mailbox_connection_ids: [],
+    phone_number_ids: [],
+    stale_hours_for_assigned: 168
+  }
 };
 
 async function main(): Promise<void> {

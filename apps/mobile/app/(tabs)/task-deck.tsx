@@ -174,8 +174,11 @@ function TaskSwipeCard({
   const panResponder = useMemo(
     () =>
       PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onStartShouldSetPanResponderCapture: () => false,
         onMoveShouldSetPanResponder: (_e, gs) =>
           Math.abs(gs.dx) > 8 && Math.abs(gs.dx) > Math.abs(gs.dy) * 0.9,
+        onMoveShouldSetPanResponderCapture: () => false,
         onPanResponderGrant: () => {
           translateX.stopAnimation();
           onSwipeStart();
@@ -196,8 +199,9 @@ function TaskSwipeCard({
           resetPosition();
         },
         onPanResponderTerminate: resetPosition,
-        onPanResponderTerminationRequest: () => false,
-        onShouldBlockNativeResponder: () => true,
+        // Allow native controls (including tab bar buttons) to take focus when needed.
+        onPanResponderTerminationRequest: () => true,
+        onShouldBlockNativeResponder: () => false,
       }),
     [translateX, onSwipeStart, onDone, onSnooze, task.id, flyOut, resetPosition]
   );

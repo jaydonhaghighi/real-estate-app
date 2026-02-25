@@ -17,6 +17,7 @@ import { MailboxesModule } from './modules/mailboxes/mailboxes.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { TasksModule } from './modules/tasks/tasks.module';
 import { TeamModule } from './modules/team/team.module';
+import { UsersModule } from './modules/users/users.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
 @Module({
@@ -38,6 +39,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     MessagesModule,
     CallsModule,
     TeamModule,
+    UsersModule,
     AiModule
   ],
   providers: [

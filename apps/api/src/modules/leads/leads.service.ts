@@ -16,6 +16,10 @@ interface LeadRow {
   state: 'New' | 'Active' | 'At-Risk' | 'Stale';
 }
 
+interface DerivedProfileRow {
+  fields_json: Record<string, unknown> | null;
+}
+
 interface ConversationEventRow {
   id: string;
   channel: string;
@@ -28,6 +32,15 @@ interface ConversationEventRow {
   meta: Record<string, unknown>;
   created_at: string;
 }
+
+type LeadProvenance = {
+  intake_origin: 'broker_channel' | 'agent_direct';
+  intake_channel_ref: {
+    mailbox_connection_id?: string | undefined;
+    phone_number_id?: string | undefined;
+  };
+  broker_assigned: boolean;
+};
 
 @Injectable()
 export class LeadsService {
@@ -165,6 +178,8 @@ export class LeadsService {
       ownerAgentId: string;
       email: string;
       source: 'email' | 'manual';
+      language?: string | undefined;
+      provenance?: LeadProvenance | undefined;
     }
   ): Promise<LeadRow> {
     const existing = await client.query<LeadRow>(
@@ -176,6 +191,7 @@ export class LeadsService {
     );
 
     if (existing.rowCount && existing.rows[0]) {
+      await this.ensureDerivedProfile(client, existing.rows[0].id, args.language ?? 'en', args.provenance);
       return existing.rows[0];
     }
 
@@ -188,16 +204,11 @@ export class LeadsService {
 
     await client.query(
       `INSERT INTO "Task" (lead_id, owner_id, due_at, status, type)
-       VALUES ($1, $2, now(), 'open', 'contact_now')`,
+         VALUES ($1, $2, now(), 'open', 'contact_now')`,
       [created.rows[0].id, args.ownerAgentId]
     );
 
-    await client.query(
-      `INSERT INTO "DerivedLeadProfile" (lead_id, summary, language, fields_json, metrics_json)
-       VALUES ($1, 'New lead awaiting first contact.', 'en', '{}'::jsonb, '{}'::jsonb)
-       ON CONFLICT (lead_id) DO NOTHING`,
-      [created.rows[0].id]
-    );
+    await this.ensureDerivedProfile(client, created.rows[0].id, args.language ?? 'en', args.provenance);
 
     return created.rows[0];
   }
@@ -209,6 +220,8 @@ export class LeadsService {
       ownerAgentId: string;
       phone: string;
       source: 'sms' | 'call' | 'manual';
+      language?: string | undefined;
+      provenance?: LeadProvenance | undefined;
     }
   ): Promise<LeadRow> {
     const existing = await client.query<LeadRow>(
@@ -220,6 +233,7 @@ export class LeadsService {
     );
 
     if (existing.rowCount && existing.rows[0]) {
+      await this.ensureDerivedProfile(client, existing.rows[0].id, args.language ?? 'en', args.provenance);
       return existing.rows[0];
     }
 
@@ -232,16 +246,11 @@ export class LeadsService {
 
     await client.query(
       `INSERT INTO "Task" (lead_id, owner_id, due_at, status, type)
-       VALUES ($1, $2, now(), 'open', 'contact_now')`,
+         VALUES ($1, $2, now(), 'open', 'contact_now')`,
       [created.rows[0].id, args.ownerAgentId]
     );
 
-    await client.query(
-      `INSERT INTO "DerivedLeadProfile" (lead_id, summary, language, fields_json, metrics_json)
-       VALUES ($1, 'New lead awaiting first contact.', 'en', '{}'::jsonb, '{}'::jsonb)
-       ON CONFLICT (lead_id) DO NOTHING`,
-      [created.rows[0].id]
-    );
+    await this.ensureDerivedProfile(client, created.rows[0].id, args.language ?? 'en', args.provenance);
 
     return created.rows[0];
   }
@@ -277,5 +286,59 @@ export class LeadsService {
     }
 
     return leadResult.rows[0];
+  }
+
+  private async ensureDerivedProfile(
+    client: PoolClient,
+    leadId: string,
+    language: string,
+    provenance?: LeadProvenance
+  ): Promise<void> {
+    const result = await client.query<DerivedProfileRow>(
+      `SELECT fields_json
+       FROM "DerivedLeadProfile"
+       WHERE lead_id = $1`,
+      [leadId]
+    );
+
+    const provenanceFields = provenance
+      ? {
+          intake_origin: provenance.intake_origin,
+          intake_channel_ref: provenance.intake_channel_ref,
+          broker_assigned: provenance.broker_assigned
+        }
+      : {};
+
+    if (!result.rowCount || !result.rows[0]) {
+      await client.query(
+        `INSERT INTO "DerivedLeadProfile" (lead_id, summary, language, fields_json, metrics_json)
+         VALUES ($1, 'New lead awaiting first contact.', $2, $3::jsonb, '{}'::jsonb)
+         ON CONFLICT (lead_id) DO NOTHING`,
+        [leadId, language, JSON.stringify(provenanceFields)]
+      );
+      return;
+    }
+
+    if (!provenance) {
+      return;
+    }
+
+    const currentFields = result.rows[0].fields_json ?? {};
+    const nextFields = {
+      ...provenanceFields,
+      ...currentFields
+    };
+
+    if (JSON.stringify(nextFields) === JSON.stringify(currentFields)) {
+      return;
+    }
+
+    await client.query(
+      `UPDATE "DerivedLeadProfile"
+       SET fields_json = $2::jsonb,
+           updated_at = now()
+       WHERE lead_id = $1`,
+      [leadId, JSON.stringify(nextFields)]
+    );
   }
 }

@@ -59,6 +59,7 @@ function RootStack(): JSX.Element {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="lead/[id]" />
       <Stack.Screen name="templates" />
+      <Stack.Screen name="admin" />
       <Stack.Screen name="compose" />
       <Stack.Screen name="mailboxes" />
       <Stack.Screen name="call-outcome" />
