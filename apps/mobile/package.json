@@ -11,7 +11,9 @@
     "build": "expo export",
     "lint": "eslint . --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "echo 'No mobile tests yet'"
+    "test": "echo 'No mobile tests yet'",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
   },
   "engines": {
     "node": ">=20 <25"
