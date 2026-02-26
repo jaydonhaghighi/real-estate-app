@@ -1,9 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
 @Injectable()
-export class QueueBootstrapService {
+export class QueueBootstrapService implements OnModuleDestroy {
   private readonly logger = new Logger(QueueBootstrapService.name);
 
   private readonly staleQueue: Queue;
@@ -24,5 +24,9 @@ export class QueueBootstrapService {
     });
 
     this.logger.log('Recurring stale detection job registered (every 5 minutes)');
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.staleQueue.close();
   }
 }

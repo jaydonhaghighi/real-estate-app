@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  Res
+} from '@nestjs/common';
 import { Response } from 'express';
 import { z } from 'zod';
 
@@ -11,6 +20,7 @@ const oauthStartSchema = z.object({
   app_redirect_uri: z.string().url().optional(),
   login_hint: z.string().email().optional()
 });
+const providerParamSchema = z.enum(['gmail', 'outlook']);
 
 const oauthCallbackSchema = z.object({
   code: z.string().min(1).optional(),
@@ -24,6 +34,14 @@ const oauthCallbackSchema = z.object({
 export class MailboxesController {
   constructor(private readonly mailboxesService: MailboxesService) {}
 
+  private parseProvider(provider: string): 'gmail' | 'outlook' {
+    const parsed = providerParamSchema.safeParse(provider);
+    if (!parsed.success) {
+      throw new BadRequestException('Invalid provider. Use gmail or outlook.');
+    }
+    return parsed.data;
+  }
+
   @Get()
   async list(@CurrentUser() user: UserContext): Promise<Record<string, unknown>[]> {
     return this.mailboxesService.list(user);
@@ -32,17 +50,17 @@ export class MailboxesController {
   @Post('oauth/:provider/start')
   async oauthStart(
     @CurrentUser() user: UserContext,
-    @Param('provider') provider: 'gmail' | 'outlook',
+    @Param('provider') provider: string,
     @Body() body: unknown
   ): Promise<{ url: string; state: string }> {
     const payload = oauthStartSchema.parse(body ?? {});
-    return this.mailboxesService.createOauthStartUrl(provider, user, payload);
+    return this.mailboxesService.createOauthStartUrl(this.parseProvider(provider), user, payload);
   }
 
   @Public()
   @Get('oauth/:provider/callback')
   async oauthCallback(
-    @Param('provider') provider: 'gmail' | 'outlook',
+    @Param('provider') provider: string,
     @Res() response: Response,
     @Query('code') code?: string,
     @Query('state') state?: string,
@@ -58,7 +76,7 @@ export class MailboxesController {
       delegated_from
     });
 
-    const result = await this.mailboxesService.oauthCallback(provider, payload);
+    const result = await this.mailboxesService.oauthCallback(this.parseProvider(provider), payload);
     if (result.redirect_url) {
       response.redirect(302, result.redirect_url);
       return;

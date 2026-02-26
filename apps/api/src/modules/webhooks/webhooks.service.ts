@@ -55,9 +55,12 @@ export class WebhooksService {
     private readonly rawContentCryptoService: RawContentCryptoService
   ) {}
 
-  async ingestEmail(payload: EmailWebhookPayload): Promise<{ accepted: boolean; deduped: boolean; lead_id?: string }> {
+  async ingestEmail(
+    provider: 'gmail' | 'outlook',
+    payload: EmailWebhookPayload
+  ): Promise<{ accepted: boolean; deduped: boolean; lead_id?: string }> {
     return this.databaseService.withSystemTransaction(async (client) => {
-      const mailbox = await this.resolveMailbox(client, payload.mailbox_connection_id, payload.mailbox_email);
+      const mailbox = await this.resolveMailbox(client, provider, payload.mailbox_connection_id, payload.mailbox_email);
       if (!mailbox) {
         return { accepted: false, deduped: false };
       }
@@ -288,6 +291,7 @@ export class WebhooksService {
 
   private async resolveMailbox(
     client: PoolClient,
+    provider: 'gmail' | 'outlook',
     mailboxConnectionId?: string,
     mailboxEmail?: string
   ): Promise<{ id: string; user_id: string; team_id: string; provider: string } | null> {
@@ -296,10 +300,15 @@ export class WebhooksService {
         `SELECT m.id, m.user_id, u.team_id, m.provider
          FROM "MailboxConnection" m
          JOIN "User" u ON u.id = m.user_id
-         WHERE m.id = $1`,
+         WHERE m.id = $1
+           AND m.status = 'active'`,
         [mailboxConnectionId]
       );
-      return result.rows[0] ?? null;
+      const row = result.rows[0] ?? null;
+      if (!row || row.provider !== provider) {
+        return null;
+      }
+      return row;
     }
 
     if (mailboxEmail) {
@@ -308,11 +317,16 @@ export class WebhooksService {
          FROM "MailboxConnection" m
          JOIN "User" u ON u.id = m.user_id
          WHERE m.email_address = $1
+           AND m.provider = $2
+           AND m.status = 'active'
          ORDER BY m.created_at ASC
-         LIMIT 1`,
-        [mailboxEmail]
+         LIMIT 2`,
+        [mailboxEmail, provider]
       );
-      return result.rows[0] ?? null;
+      if (result.rowCount === 1) {
+        return result.rows[0];
+      }
+      return null;
     }
 
     return null;
@@ -336,6 +350,7 @@ export class WebhooksService {
         `SELECT id, team_id, provider
          FROM "PhoneNumber"
          WHERE number = $1
+           AND status = 'active'
          LIMIT 1`,
         [toNumber]
       );
@@ -420,18 +435,18 @@ export class WebhooksService {
 
   isValidSignature(body: unknown, providedSignature?: string): boolean {
     const secret = this.configService.get<string>('WEBHOOK_SHARED_SECRET');
-    if (!secret) {
-      return true;
-    }
-
-    if (!providedSignature) {
+    if (!secret || !providedSignature) {
       return false;
     }
 
-    const expected = createHmac('sha256', secret).update(JSON.stringify(body)).digest('hex');
+    const normalizedSignature = providedSignature.trim().replace(/^sha256=/i, '');
+    if (!/^[a-fA-F0-9]+$/.test(normalizedSignature)) {
+      return false;
+    }
 
-    const expectedBuffer = Buffer.from(expected);
-    const providedBuffer = Buffer.from(providedSignature);
+    const expectedBuffer = createHmac('sha256', secret).update(JSON.stringify(body)).digest();
+    const providedBuffer = Buffer.from(normalizedSignature, 'hex');
+
     if (expectedBuffer.length !== providedBuffer.length) {
       return false;
     }

@@ -77,5 +77,56 @@ async function alreadyApplied(client: Client, filename: string): Promise<boolean
     return Boolean(check.rowCount);
   }
 
+  if (filename.startsWith('004_')) {
+    const check = await client.query<{ has_column: boolean; has_index: boolean }>(
+      `SELECT
+         EXISTS (
+           SELECT 1
+           FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'User'
+             AND column_name = 'clerk_id'
+         ) AS has_column,
+         EXISTS (
+           SELECT 1
+           FROM pg_indexes
+           WHERE schemaname = 'public'
+             AND indexname = 'ux_user_clerk_id'
+         ) AS has_index`
+    );
+    return Boolean(check.rows[0]?.has_column && check.rows[0]?.has_index);
+  }
+
+  if (filename.startsWith('005_')) {
+    const check = await client.query<{ relforcerowsecurity: boolean }>(
+      `SELECT relforcerowsecurity
+       FROM pg_class
+       WHERE oid = '"Lead"'::regclass`
+    );
+    return Boolean(check.rows[0]?.relforcerowsecurity);
+  }
+
+  if (filename.startsWith('006_')) {
+    const check = await client.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+       FROM pg_indexes
+       WHERE schemaname = 'public'
+         AND indexname IN ('ux_lead_team_primary_email', 'ux_lead_team_primary_phone')`
+    );
+    return Number(check.rows[0]?.count ?? 0) === 2;
+  }
+
+  if (filename.startsWith('007_')) {
+    const check = await client.query(
+      `SELECT 1
+       FROM pg_policies
+       WHERE schemaname = 'public'
+         AND tablename = 'Team'
+         AND policyname = 'team_insert_policy'
+       LIMIT 1`
+    );
+    return Boolean(check.rowCount);
+  }
+
   return false;
 }

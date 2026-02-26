@@ -9,7 +9,6 @@ import {
 } from '@mvp/shared-types';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import { PoolClient } from 'pg';
 
 import { DatabaseService } from '../../common/db/database.service';
 import { UserContext } from '../../common/auth/user-context';
@@ -27,6 +26,7 @@ interface AdminLeadQueueRow {
   summary: string | null;
   language: string | null;
   fields_json: Record<string, unknown> | null;
+  latest_event: Record<string, unknown> | null;
 }
 
 interface AssignableAgentRow {
@@ -263,10 +263,23 @@ export class TeamService {
                 l.primary_phone,
                 d.summary,
                 d.language,
-                d.fields_json
+                d.fields_json,
+                le.latest_event
          FROM "Task" t
          JOIN "Lead" l ON l.id = t.lead_id
          LEFT JOIN "DerivedLeadProfile" d ON d.lead_id = l.id
+         LEFT JOIN LATERAL (
+           SELECT jsonb_build_object(
+             'id', em.id,
+             'channel', em.channel,
+             'type', em.type,
+             'direction', em.direction,
+             'created_at', em.created_at
+           ) AS latest_event
+           FROM team_event_metadata(l.id) em
+           ORDER BY em.created_at DESC
+           LIMIT 1
+         ) le ON true
          WHERE l.team_id = $1
            AND t.status = 'open'
            AND t.owner_id = $2
@@ -278,17 +291,10 @@ export class TeamService {
         [user.teamId, user.userId]
       );
 
-      const queue: Record<string, unknown>[] = [];
-      for (const row of result.rows) {
-        const latestEvent = await this.getLatestEventMetadata(client, row.lead_id);
-        queue.push({
-          ...row,
-          intake_origin: 'broker_channel',
-          latest_event: latestEvent
-        });
-      }
-
-      return queue;
+      return result.rows.map((row) => ({
+        ...row,
+        intake_origin: 'broker_channel'
+      }));
     });
   }
 
@@ -306,9 +312,22 @@ export class TeamService {
                 l.primary_phone,
                 d.summary,
                 d.language,
-                d.fields_json
+                d.fields_json,
+                le.latest_event
          FROM "Lead" l
          LEFT JOIN "DerivedLeadProfile" d ON d.lead_id = l.id
+         LEFT JOIN LATERAL (
+           SELECT jsonb_build_object(
+             'id', em.id,
+             'channel', em.channel,
+             'type', em.type,
+             'direction', em.direction,
+             'created_at', em.created_at
+           ) AS latest_event
+           FROM team_event_metadata(l.id) em
+           ORDER BY em.created_at DESC
+           LIMIT 1
+         ) le ON true
          LEFT JOIN LATERAL (
            SELECT t.id AS task_id,
                   t.type AS task_type,
@@ -329,17 +348,10 @@ export class TeamService {
         [user.teamId]
       );
 
-      const queue: Record<string, unknown>[] = [];
-      for (const row of result.rows) {
-        const latestEvent = await this.getLatestEventMetadata(client, row.lead_id);
-        queue.push({
-          ...row,
-          intake_origin: 'broker_channel',
-          latest_event: latestEvent
-        });
-      }
-
-      return queue;
+      return result.rows.map((row) => ({
+        ...row,
+        intake_origin: 'broker_channel'
+      }));
     });
   }
 
@@ -357,9 +369,22 @@ export class TeamService {
                 l.primary_phone,
                 d.summary,
                 d.language,
-                d.fields_json
+                d.fields_json,
+                le.latest_event
          FROM "Lead" l
          LEFT JOIN "DerivedLeadProfile" d ON d.lead_id = l.id
+         LEFT JOIN LATERAL (
+           SELECT jsonb_build_object(
+             'id', em.id,
+             'channel', em.channel,
+             'type', em.type,
+             'direction', em.direction,
+             'created_at', em.created_at
+           ) AS latest_event
+           FROM team_event_metadata(l.id) em
+           ORDER BY em.created_at DESC
+           LIMIT 1
+         ) le ON true
          LEFT JOIN LATERAL (
            SELECT t.id AS task_id,
                   t.type AS task_type,
@@ -381,17 +406,10 @@ export class TeamService {
         [user.teamId]
       );
 
-      const queue: Record<string, unknown>[] = [];
-      for (const row of result.rows) {
-        const latestEvent = await this.getLatestEventMetadata(client, row.lead_id);
-        queue.push({
-          ...row,
-          intake_origin: 'broker_channel',
-          latest_event: latestEvent
-        });
-      }
-
-      return queue;
+      return result.rows.map((row) => ({
+        ...row,
+        intake_origin: 'broker_channel'
+      }));
     });
   }
 
@@ -554,18 +572,4 @@ export class TeamService {
     });
   }
 
-  private async getLatestEventMetadata(
-    client: PoolClient,
-    leadId: string
-  ): Promise<Record<string, unknown> | null> {
-    const result = await client.query(
-      `SELECT id, channel, type, direction, created_at
-       FROM team_event_metadata($1)
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [leadId]
-    );
-
-    return result.rows[0] ?? null;
-  }
 }

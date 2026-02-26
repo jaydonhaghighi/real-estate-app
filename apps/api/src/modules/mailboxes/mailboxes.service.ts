@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -32,7 +32,7 @@ interface OauthCallbackParams {
 }
 
 @Injectable()
-export class MailboxesService {
+export class MailboxesService implements OnModuleDestroy {
   private readonly queue: Queue;
 
   constructor(
@@ -64,13 +64,14 @@ export class MailboxesService {
     user: UserContext,
     options?: OauthStartOptions
   ): { url: string; state: string } {
+    const validatedAppRedirectUri = this.validateAppRedirectUri(options?.app_redirect_uri);
     const state = this.encodeOauthState({
       nonce: uuidv4(),
       teamId: user.teamId,
       userId: user.userId,
       provider,
       issued_at: Date.now(),
-      app_redirect_uri: options?.app_redirect_uri
+      app_redirect_uri: validatedAppRedirectUri
     });
 
     const url =
@@ -86,7 +87,7 @@ export class MailboxesService {
     query: OauthCallbackParams
   ): Promise<{ connected: true; mailbox_connection_id: string; redirect_url?: string | undefined }> {
     if (!query.state || !query.code) {
-      throw new NotFoundException('OAuth callback missing state/code');
+      throw new BadRequestException('OAuth callback missing state/code');
     }
 
     const decoded = this.decodeOauthState(query.state, provider);
@@ -254,14 +255,52 @@ export class MailboxesService {
     if (mailboxType === 'delegated') {
       return 'delegated';
     }
-    throw new NotFoundException('Invalid mailbox_type');
+    throw new BadRequestException('Invalid mailbox_type');
   }
 
   private buildAppRedirect(baseUri: string, provider: 'gmail' | 'outlook', mailboxConnectionId: string): string {
-    const url = new URL(baseUri);
+    const validatedUri = this.validateAppRedirectUri(baseUri);
+    if (!validatedUri) {
+      throw new BadRequestException('app_redirect_uri is not allowed');
+    }
+    const url = new URL(validatedUri);
     url.searchParams.set('connected', 'true');
     url.searchParams.set('provider', provider);
     url.searchParams.set('mailbox_connection_id', mailboxConnectionId);
     return url.toString();
+  }
+
+  private validateAppRedirectUri(uri: string | undefined): string | undefined {
+    if (!uri) {
+      return undefined;
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(uri);
+    } catch (_error) {
+      throw new BadRequestException('Invalid app_redirect_uri');
+    }
+
+    const allowlistRaw = this.configService.get<string>('APP_REDIRECT_ALLOWLIST');
+    if (!allowlistRaw) {
+      throw new BadRequestException('app_redirect_uri is not allowed');
+    }
+
+    const allowlist = allowlistRaw
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    const candidate = parsed.toString();
+    const matches = allowlist.some((allowed) => candidate.startsWith(allowed));
+    if (!matches) {
+      throw new BadRequestException('app_redirect_uri is not in the allowlist');
+    }
+
+    return candidate;
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.queue.close();
   }
 }

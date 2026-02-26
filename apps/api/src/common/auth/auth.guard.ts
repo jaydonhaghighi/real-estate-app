@@ -40,25 +40,19 @@ export class AuthGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<
       RequestWithUser & { headers: Record<string, string | string[] | undefined> }
     >();
+    const allowDevHeaderAuth = this.isDevHeaderAuthEnabled();
 
     const authHeader = request.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
-      try {
-        request.user = await this.validateJwt(authHeader.slice(7));
-        return true;
-      } catch (error) {
-        if (this.configService.get<string>('NODE_ENV') !== 'production') {
-          const devUser = this.parseDevHeaderUser(request.headers);
-          if (devUser) {
-            request.user = devUser;
-            return true;
-          }
-        }
-        throw error;
-      }
+      request.user = await this.validateJwt(authHeader.slice(7));
+      return true;
     }
 
-    if (this.configService.get<string>('NODE_ENV') !== 'production') {
+    if (authHeader) {
+      throw new UnauthorizedException('Unsupported authorization scheme');
+    }
+
+    if (allowDevHeaderAuth) {
       const devUser = this.parseDevHeaderUser(request.headers);
       if (devUser) {
         request.user = devUser;
@@ -67,6 +61,11 @@ export class AuthGuard implements CanActivate {
     }
 
     throw new UnauthorizedException('Authentication required');
+  }
+
+  private isDevHeaderAuthEnabled(): boolean {
+    return this.configService.get<boolean>('ALLOW_DEV_HEADER_AUTH', false)
+      && this.configService.get<string>('NODE_ENV') === 'development';
   }
 
   private parseDevHeaderUser(
@@ -93,10 +92,14 @@ export class AuthGuard implements CanActivate {
 
     const issuer = this.configService.get<string>('JWT_ISSUER');
     const audience = this.configService.get<string>('JWT_AUDIENCE');
+    if (!issuer || !audience) {
+      throw new UnauthorizedException('JWT issuer/audience is not configured');
+    }
 
-    const verifyOptions: { issuer?: string; audience?: string } = {};
-    if (issuer) verifyOptions.issuer = issuer;
-    if (audience) verifyOptions.audience = audience;
+    const verifyOptions: { issuer: string; audience: string } = {
+      issuer,
+      audience
+    };
 
     let verified: JWTVerifyResult;
     try {

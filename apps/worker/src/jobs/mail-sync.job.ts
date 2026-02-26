@@ -1,15 +1,16 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Worker } from 'bullmq';
 
 @Injectable()
-export class MailSyncJob implements OnModuleInit {
+export class MailSyncJob implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MailSyncJob.name);
+  private worker?: Worker;
 
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit(): void {
-    const worker = new Worker(
+    this.worker = new Worker(
       'mail-sync',
       async (job) => {
         this.logger.log(`Processing mail sync job: ${job.name} ${JSON.stringify(job.data)}`);
@@ -31,8 +32,14 @@ export class MailSyncJob implements OnModuleInit {
       }
     );
 
-    worker.on('failed', (_, error) => {
+    this.worker.on('failed', (_, error) => {
       this.logger.error(`mail-sync failed: ${error.message}`);
     });
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.worker) {
+      await this.worker.close();
+    }
   }
 }

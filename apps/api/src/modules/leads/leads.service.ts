@@ -92,7 +92,7 @@ export class LeadsService {
 
   async getRawEvents(user: UserContext, leadId: string, reason?: string): Promise<Record<string, unknown>> {
     return this.databaseService.withUserTransaction(user, async (client) => {
-      const lead = await this.getLeadForAccess(client, leadId, user.teamId);
+      const lead = await this.getLeadForAccess(client, leadId, user);
 
       if (user.role === 'TEAM_LEAD') {
         if (lead.state !== 'Stale') {
@@ -143,7 +143,7 @@ export class LeadsService {
     }
 
     return this.databaseService.withUserTransaction(user, async (client) => {
-      const lead = await this.getLeadForAccess(client, leadId, user.teamId);
+      const lead = await this.getLeadForAccess(client, leadId, user);
       if (lead.state !== 'Stale') {
         throw new ForbiddenException('Reassignment is only allowed for stale leads');
       }
@@ -182,35 +182,41 @@ export class LeadsService {
       provenance?: LeadProvenance | undefined;
     }
   ): Promise<LeadRow> {
-    const existing = await client.query<LeadRow>(
-      `SELECT id, team_id, owner_agent_id, state
-       FROM "Lead"
-       WHERE team_id = $1 AND primary_email = $2
-       LIMIT 1`,
-      [args.teamId, args.email]
-    );
-
-    if (existing.rowCount && existing.rows[0]) {
-      await this.ensureDerivedProfile(client, existing.rows[0].id, args.language ?? 'en', args.provenance);
-      return existing.rows[0];
-    }
-
+    const normalizedEmail = args.email.toLowerCase();
     const created = await client.query<LeadRow>(
       `INSERT INTO "Lead" (team_id, owner_agent_id, state, source, primary_email, next_action_at)
        VALUES ($1, $2, 'New', $3, $4, now())
+       ON CONFLICT (team_id, primary_email)
+       WHERE primary_email IS NOT NULL
+       DO NOTHING
        RETURNING id, team_id, owner_agent_id, state`,
-      [args.teamId, args.ownerAgentId, args.source, args.email]
+      [args.teamId, args.ownerAgentId, args.source, normalizedEmail]
     );
 
-    await client.query(
-      `INSERT INTO "Task" (lead_id, owner_id, due_at, status, type)
-         VALUES ($1, $2, now(), 'open', 'contact_now')`,
-      [created.rows[0].id, args.ownerAgentId]
-    );
+    const lead =
+      created.rows[0]
+      ?? (
+        await client.query<LeadRow>(
+          `SELECT id, team_id, owner_agent_id, state
+           FROM "Lead"
+           WHERE team_id = $1
+             AND primary_email = $2
+           LIMIT 1`,
+          [args.teamId, normalizedEmail]
+        )
+      ).rows[0];
 
-    await this.ensureDerivedProfile(client, created.rows[0].id, args.language ?? 'en', args.provenance);
+    if (!lead) {
+      throw new NotFoundException('Unable to resolve lead after email upsert');
+    }
 
-    return created.rows[0];
+    if (created.rowCount) {
+      await this.ensureContactNowTask(client, lead.id, args.ownerAgentId);
+    }
+
+    await this.ensureDerivedProfile(client, lead.id, args.language ?? 'en', args.provenance);
+
+    return lead;
   }
 
   async findOrCreateLeadByPhone(
@@ -224,35 +230,40 @@ export class LeadsService {
       provenance?: LeadProvenance | undefined;
     }
   ): Promise<LeadRow> {
-    const existing = await client.query<LeadRow>(
-      `SELECT id, team_id, owner_agent_id, state
-       FROM "Lead"
-       WHERE team_id = $1 AND primary_phone = $2
-       LIMIT 1`,
-      [args.teamId, args.phone]
-    );
-
-    if (existing.rowCount && existing.rows[0]) {
-      await this.ensureDerivedProfile(client, existing.rows[0].id, args.language ?? 'en', args.provenance);
-      return existing.rows[0];
-    }
-
     const created = await client.query<LeadRow>(
       `INSERT INTO "Lead" (team_id, owner_agent_id, state, source, primary_phone, next_action_at)
        VALUES ($1, $2, 'New', $3, $4, now())
+       ON CONFLICT (team_id, primary_phone)
+       WHERE primary_phone IS NOT NULL
+       DO NOTHING
        RETURNING id, team_id, owner_agent_id, state`,
       [args.teamId, args.ownerAgentId, args.source, args.phone]
     );
 
-    await client.query(
-      `INSERT INTO "Task" (lead_id, owner_id, due_at, status, type)
-         VALUES ($1, $2, now(), 'open', 'contact_now')`,
-      [created.rows[0].id, args.ownerAgentId]
-    );
+    const lead =
+      created.rows[0]
+      ?? (
+        await client.query<LeadRow>(
+          `SELECT id, team_id, owner_agent_id, state
+           FROM "Lead"
+           WHERE team_id = $1
+             AND primary_phone = $2
+           LIMIT 1`,
+          [args.teamId, args.phone]
+        )
+      ).rows[0];
 
-    await this.ensureDerivedProfile(client, created.rows[0].id, args.language ?? 'en', args.provenance);
+    if (!lead) {
+      throw new NotFoundException('Unable to resolve lead after phone upsert');
+    }
 
-    return created.rows[0];
+    if (created.rowCount) {
+      await this.ensureContactNowTask(client, lead.id, args.ownerAgentId);
+    }
+
+    await this.ensureDerivedProfile(client, lead.id, args.language ?? 'en', args.provenance);
+
+    return lead;
   }
 
   async applyTouch(client: PoolClient, leadId: string, ownerId: string): Promise<void> {
@@ -273,12 +284,14 @@ export class LeadsService {
     );
   }
 
-  private async getLeadForAccess(client: PoolClient, leadId: string, teamId: string): Promise<LeadRow> {
+  private async getLeadForAccess(client: PoolClient, leadId: string, user: UserContext): Promise<LeadRow> {
     const leadResult = await client.query<LeadRow>(
       `SELECT id, team_id, owner_agent_id, state
        FROM "Lead"
-       WHERE id = $1 AND team_id = $2`,
-      [leadId, teamId]
+       WHERE id = $1
+         AND team_id = $2
+         AND ($3 = 'TEAM_LEAD' OR owner_agent_id = $4)`,
+      [leadId, user.teamId, user.role, user.userId]
     );
 
     if (!leadResult.rowCount || !leadResult.rows[0]) {
@@ -340,5 +353,25 @@ export class LeadsService {
        WHERE lead_id = $1`,
       [leadId, JSON.stringify(nextFields)]
     );
+  }
+
+  private async ensureContactNowTask(client: PoolClient, leadId: string, ownerId: string): Promise<void> {
+    const existingTask = await client.query(
+      `SELECT id
+       FROM "Task"
+       WHERE lead_id = $1
+         AND status = 'open'
+         AND type = 'contact_now'
+       LIMIT 1`,
+      [leadId]
+    );
+
+    if (!existingTask.rowCount) {
+      await client.query(
+        `INSERT INTO "Task" (lead_id, owner_id, due_at, status, type)
+         VALUES ($1, $2, now(), 'open', 'contact_now')`,
+        [leadId, ownerId]
+      );
+    }
   }
 }

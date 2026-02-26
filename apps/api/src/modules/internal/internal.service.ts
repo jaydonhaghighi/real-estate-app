@@ -1,9 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
 @Injectable()
-export class InternalService {
+export class InternalService implements OnModuleDestroy {
   private readonly staleQueue: Queue;
 
   constructor(private readonly configService: ConfigService) {
@@ -27,5 +27,9 @@ export class InternalService {
     );
 
     return { queued: true };
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.staleQueue.close();
   }
 }

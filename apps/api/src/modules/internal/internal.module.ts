@@ -2,9 +2,10 @@ import { Module } from '@nestjs/common';
 
 import { InternalController } from './internal.controller';
 import { InternalService } from './internal.service';
+import { InternalTokenGuard } from './internal-token.guard';
 
 @Module({
   controllers: [InternalController],
-  providers: [InternalService]
+  providers: [InternalService, InternalTokenGuard]
 })
 export class InternalModule {}
