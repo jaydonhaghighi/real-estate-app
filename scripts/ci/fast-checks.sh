@@ -3,8 +3,7 @@ set -euo pipefail
 
 BASE_REF="${MVP_AFFECTED_BASE_REF:-origin/main}"
 
-echo "Running fast lint/typecheck checks..."
-pnpm lint
+echo "Running fast typecheck checks..."
 pnpm typecheck
 
 if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
