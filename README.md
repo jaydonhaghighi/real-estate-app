@@ -62,9 +62,13 @@ pnpm dev
 ### Useful commands
 
 - `pnpm infra:up` - start Cloud SQL proxy + Redis + API + Worker
+- `pnpm infra:up:local` - start local Postgres + Redis (no Cloud SQL proxy)
 - `pnpm infra:down` - stop backend containers
+- `pnpm infra:down:local` - stop local Postgres + Redis
 - `pnpm infra:logs` - follow backend container logs
+- `pnpm infra:logs:local` - follow local Postgres + Redis logs
 - `pnpm dev:ui` - run only web-admin + mobile on host
+- `pnpm dev:local` - run full local stack (Postgres + Redis + api + worker + web + mobile)
 - `pnpm env:pull` - sync `.env` files from GCP Secret Manager
 - `pnpm env:check` - validate environment contracts
 - `pnpm gcp:check` - validate gcloud project and auth
@@ -72,6 +76,95 @@ pnpm dev
 - `pnpm db:migrate:shared` - sanctioned migration command for shared dev DB
 - `pnpm checks:all` - run all local gate checks (GCP + env + DB + fast lint/type/test)
 - `pnpm doctor` - alias for `pnpm checks:all`
+
+## pnpm Command Cheat Sheet
+
+### Command patterns
+
+- `pnpm <script>` - run a root `package.json` script
+- `pnpm --filter <package-name> <script>` - run a workspace package script
+- `pnpm --filter @mvp/api dev` - example filtered run
+
+### Root scripts (complete)
+
+- `pnpm setup` - bootstrap local dev prerequisites and initial checks
+- `pnpm hooks:install` - point git hooks to `.husky`
+- `pnpm dev` - full local dev flow (deps + db doctor + backend apps + UIs)
+- `pnpm dev:no-mobile` - local dev flow without mobile UI
+- `pnpm dev:local` - full local dev flow using local Postgres/Redis + host app processes
+- `pnpm dev:ui` - run host UIs only
+- `pnpm infra:up` - start Cloud SQL proxy + Redis + API + Worker
+- `pnpm infra:up:deps` - start Cloud SQL proxy + Redis only
+- `pnpm infra:up:apps` - start API + Worker containers
+- `pnpm infra:up:local` - start local Postgres + Redis
+- `pnpm infra:down` - stop local containers
+- `pnpm infra:down:local` - stop local Postgres + Redis
+- `pnpm infra:logs` - tail local backend logs
+- `pnpm infra:logs:local` - tail local Postgres + Redis logs
+- `pnpm build` - build all workspaces via Turbo
+- `pnpm lint` - lint all workspaces via Turbo
+- `pnpm test` - run guarded tests across workspaces via Turbo
+- `pnpm typecheck` - typecheck all workspaces via Turbo
+- `pnpm checks:fast` - run fast CI-style checks script
+- `pnpm checks:all` - run gcp/env/db checks plus fast checks
+- `pnpm doctor` - alias of `pnpm checks:all`
+- `pnpm env:pull` - pull env files from GCP Secret Manager
+- `pnpm env:push` - push env files to GCP Secret Manager
+- `pnpm env:check` - validate env contracts
+- `pnpm gcp:check` - validate gcloud auth/project prerequisites
+- `pnpm db:migrate` - run DB migration script in `@mvp/db`
+- `pnpm db:migrate:shared` - run DB migration in shared mode
+- `pnpm db:doctor` - run DB doctor script in `@mvp/db`
+- `pnpm db:seed` - seed DB via `@mvp/db`
+- `pnpm db:seed:admin` - seed admin routing via `@mvp/db`
+- `pnpm format` - format workspaces via Turbo
+
+### Common workflows
+
+- First-time setup: `pnpm setup`
+- Full local dev (api + worker + web + mobile): `pnpm dev`
+- Full local dev without Cloud SQL proxy: `pnpm dev:local`
+- Local dev without mobile: `pnpm dev:no-mobile`
+- Start only infra dependencies: `pnpm infra:up:deps`
+- Start only backend app containers: `pnpm infra:up:apps`
+- Run only host UIs: `pnpm dev:ui`
+- Tail backend logs: `pnpm infra:logs`
+- Stop local containers: `pnpm infra:down`
+
+### Checks and quality
+
+- Run lint everywhere: `pnpm lint`
+- Run typecheck everywhere: `pnpm typecheck`
+- Run tests everywhere: `pnpm test`
+- Build all workspaces: `pnpm build`
+- Format all workspaces: `pnpm format`
+- Fast local CI checks: `pnpm checks:fast`
+- Full local CI checks: `pnpm checks:all` (same as `pnpm doctor`)
+
+### Env and GCP
+
+- Pull `.env` values from GCP: `pnpm env:pull`
+- Push local `.env` values to GCP: `pnpm env:push`
+- Validate env contracts: `pnpm env:check`
+- Verify gcloud auth/project setup: `pnpm gcp:check`
+
+### Database
+
+- Validate migration history/checksums: `pnpm db:doctor`
+- Run shared migration flow: `pnpm db:migrate:shared`
+- Run normal migration flow: `pnpm db:migrate`
+- Seed database: `pnpm db:seed`
+- Seed admin routing data: `pnpm db:seed:admin`
+
+### Package-specific commands
+
+- API (`@mvp/api`): `pnpm --filter @mvp/api dev`, `build`, `start`, `lint`, `typecheck`, `test`
+- Worker (`@mvp/worker`): `pnpm --filter @mvp/worker dev`, `build`, `start`, `lint`, `typecheck`, `test`
+- Web admin (`@mvp/web-admin`): `pnpm --filter @mvp/web-admin dev`, `build`, `start`, `lint`, `typecheck`, `test`
+- Mobile (`@mvp/mobile`): `pnpm --filter @mvp/mobile dev`, `dev:ios`, `dev:lan`, `dev:tunnel`, `android`, `ios`, `build`, `lint`, `typecheck`, `test`
+- DB package (`@mvp/db`): `pnpm --filter @mvp/db doctor`, `migrate`, `seed`, `seed:admin`, `build`, `lint`, `typecheck`, `test`
+- Shared types (`@mvp/shared-types`): `pnpm --filter @mvp/shared-types build`, `lint`, `typecheck`, `test`
+- Config package (`@mvp/config`): no scripts defined
 
 ## GCP Secrets and Auth
 
