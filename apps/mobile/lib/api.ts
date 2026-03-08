@@ -101,17 +101,22 @@ function devAuthHeaders(): Record<string, string> {
 }
 
 async function authHeaders(): Promise<Record<string, string>> {
+  if (_getToken) {
+    try {
+      const token = await _getToken();
+      if (token) {
+        return { Authorization: `Bearer ${token}` };
+      }
+    } catch (_tokenError) {
+      // Fall through to optional dev header auth.
+    }
+  }
+
   const fallbackHeaders = devAuthHeaders();
   if (Object.keys(fallbackHeaders).length > 0) {
     return fallbackHeaders;
   }
 
-  if (_getToken) {
-    const token = await _getToken();
-    if (token) {
-      return { Authorization: `Bearer ${token}` };
-    }
-  }
   return {};
 }
 

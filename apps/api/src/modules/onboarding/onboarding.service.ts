@@ -131,6 +131,8 @@ export class OnboardingService {
     const teamCodeHash = this.teamCodeService.hash(normalizedCode);
 
     return this.databaseService.withSystemTransaction(async (client) => {
+      await this.applyTeamJoinCodeContext(client, teamCodeHash);
+
       const teamLookup = await client.query<{ id: string }>(
         `SELECT id
          FROM "Team"
@@ -280,6 +282,13 @@ export class OnboardingService {
         set_config('app.team_id', $2, true),
         set_config('app.role', $3, true)`,
       [userId, teamId, role]
+    );
+  }
+
+  private async applyTeamJoinCodeContext(client: PoolClient, teamCodeHash: string): Promise<void> {
+    await client.query(
+      `SELECT set_config('app.team_join_code_hash', $1, true)`,
+      [teamCodeHash]
     );
   }
 }

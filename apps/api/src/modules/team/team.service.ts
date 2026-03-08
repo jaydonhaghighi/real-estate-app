@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   EscalationRules,
   brokerIntakeRuleSchema,
@@ -36,6 +36,13 @@ interface AssignableAgentRow {
   language: string;
 }
 
+interface AgentLinkRow {
+  id: string;
+  team_id: string;
+  role: 'AGENT' | 'TEAM_LEAD';
+  clerk_id: string | null;
+}
+
 interface TeamJoinCodeRow {
   join_code_hash: string | null;
   join_code_encrypted: Buffer | null;
@@ -45,6 +52,10 @@ interface TeamJoinCodeRow {
 const assignBrokerTaskSchema = z.object({
   assignee_user_id: z.string().uuid(),
   reason: z.string().min(1).max(500)
+});
+
+const linkAgentClerkSchema = z.object({
+  clerk_id: z.string().min(1).max(255)
 });
 
 const teamRuleUpdateSchema = staleRuleSchema
@@ -310,6 +321,84 @@ export class TeamService {
       );
 
       return result.rows;
+    });
+  }
+
+  async linkAgentClerkId(
+    user: UserContext,
+    agentUserId: string,
+    payload: unknown
+  ): Promise<{ user_id: string; team_id: string; role: 'AGENT'; clerk_id: string; linked: true }> {
+    const parsed = linkAgentClerkSchema.parse(payload);
+
+    return this.databaseService.withUserTransaction(user, async (client) => {
+      const targetAgent = await client.query<AgentLinkRow>(
+        `SELECT id, team_id, role, clerk_id
+         FROM "User"
+         WHERE id = $1
+           AND team_id = $2
+           AND role = 'AGENT'
+         LIMIT 1`,
+        [agentUserId, user.teamId]
+      );
+
+      const existingAgent = targetAgent.rows[0];
+      if (!existingAgent) {
+        throw new NotFoundException('Agent not found');
+      }
+
+      if (existingAgent.clerk_id) {
+        if (existingAgent.clerk_id !== parsed.clerk_id) {
+          throw new ConflictException('Agent is already linked to a different Clerk account');
+        }
+
+        return {
+          user_id: existingAgent.id,
+          team_id: existingAgent.team_id,
+          role: 'AGENT',
+          clerk_id: existingAgent.clerk_id,
+          linked: true
+        };
+      }
+
+      const existingForClerkId = await client.query<AgentLinkRow>(
+        `SELECT id, team_id, role, clerk_id
+         FROM "User"
+         WHERE clerk_id = $1
+         LIMIT 1`,
+        [parsed.clerk_id]
+      );
+      const linkedUser = existingForClerkId.rows[0];
+      if (linkedUser && linkedUser.id !== existingAgent.id) {
+        throw new ConflictException('Clerk account is already linked to another user');
+      }
+
+      try {
+        const updated = await client.query<AgentLinkRow>(
+          `UPDATE "User"
+           SET clerk_id = $2
+           WHERE id = $1
+           RETURNING id, team_id, role, clerk_id`,
+          [existingAgent.id, parsed.clerk_id]
+        );
+
+        if (!updated.rows[0] || updated.rows[0].role !== 'AGENT' || !updated.rows[0].clerk_id) {
+          throw new NotFoundException('Agent not found');
+        }
+
+        return {
+          user_id: updated.rows[0].id,
+          team_id: updated.rows[0].team_id,
+          role: 'AGENT',
+          clerk_id: updated.rows[0].clerk_id,
+          linked: true
+        };
+      } catch (error: unknown) {
+        if (this.isUserClerkIdUniqueViolation(error)) {
+          throw new ConflictException('Clerk account is already linked to another user');
+        }
+        throw error;
+      }
     });
   }
 
@@ -643,6 +732,34 @@ export class TeamService {
 
     const pgError = error as { code?: string; constraint?: string };
     return pgError.code === '23505' && pgError.constraint === constraint;
+  }
+
+  private isUserClerkIdUniqueViolation(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const pgError = error as {
+      code?: string;
+      constraint?: string;
+      table?: string;
+      detail?: string;
+    };
+
+    if (pgError.code !== '23505') {
+      return false;
+    }
+
+    const knownConstraints = new Set(['ux_user_clerk_id', 'User_clerk_id_key']);
+    if (pgError.constraint && knownConstraints.has(pgError.constraint)) {
+      return true;
+    }
+
+    return (
+      (pgError.table === 'User' || pgError.table === '"User"')
+      && typeof pgError.detail === 'string'
+      && pgError.detail.includes('(clerk_id)')
+    );
   }
 
 }

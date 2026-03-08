@@ -106,6 +106,15 @@ export class TeamController {
     return this.teamService.getAssignableAgents(user);
   }
 
+  @Post('admin/agents/:agentUserId/link-clerk')
+  async linkAgentClerk(
+    @CurrentUser() user: UserContext,
+    @Param('agentUserId') agentUserId: string,
+    @Body() body: unknown
+  ): Promise<{ user_id: string; team_id: string; role: 'AGENT'; clerk_id: string; linked: true }> {
+    return this.teamService.linkAgentClerkId(user, agentUserId, body);
+  }
+
   @Get('admin/intake-queue')
   async getAdminIntakeQueue(@CurrentUser() user: UserContext): Promise<Record<string, unknown>[]> {
     return this.teamService.getAdminIntakeQueue(user);
