@@ -74,6 +74,11 @@ pnpm dev
 - `pnpm infra:up:prod` - start Cloud SQL proxy + Redis + API + Worker
 - `pnpm infra:down:prod` - stop prod-mode backend containers
 - `pnpm infra:logs:prod` - follow prod-mode container logs
+- `pnpm infra:vm:up` - start backend infra on a remote Linux VM over SSH
+- `pnpm infra:vm:down` - stop remote VM backend containers
+- `pnpm infra:vm:logs` - follow remote VM backend logs
+- `pnpm infra:vm:ps` - list remote VM backend containers
+- `pnpm infra:vm:tunnel` - forward VM ports to local `localhost` (default `3001 6432:5432 6379`)
 - `pnpm dev:ui` - same as `pnpm dev` (local DB/API/worker + host UI, interactive mobile target prompt)
 - `pnpm dev:ui:simulator` - same as `pnpm dev` but force iOS simulator mobile
 - `pnpm dev:ui:device` - same as `pnpm dev` but force physical-device mobile (Expo Go)
@@ -87,6 +92,27 @@ pnpm dev
 - `pnpm db:migrate:shared` - sanctioned migration command for shared dev DB
 - `pnpm checks:all` - run all local gate checks (GCP + env + DB + fast lint/type/test)
 - `pnpm doctor` - alias for `pnpm checks:all`
+
+### Remote VM Docker (optional)
+
+To run Docker on a Linux VM instead of locally, use `pnpm infra:vm:*`.
+
+Create a local (gitignored) `.env.vm` file at repo root:
+
+```bash
+DEV_VM_SSH_TARGET=your-user@192.168.2.24
+DEV_VM_PROJECT_DIR='~/projects/suivo'
+DEV_VM_COMPOSE_FILE=docker-compose.dev.yml
+DEV_VM_FORWARD_PORTS="3001 6432:5432 6379"
+```
+
+Typical flow:
+
+1. `pnpm infra:vm:up` (start backend containers on VM)
+2. `pnpm infra:vm:tunnel` (keep this running in a second terminal)
+3. `pnpm ui:host` (run web/mobile locally on Mac)
+
+Existing local workflows (`pnpm infra:*`, `pnpm dev`, `pnpm prod`) remain unchanged.
 
 ## GCP Secrets and Auth
 
