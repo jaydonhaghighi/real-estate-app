@@ -55,9 +55,16 @@ pnpm dev
 
 `pnpm dev` runs:
 
-1. DB drift check (`db:doctor`)
-2. backend infra boot (`cloud-sql-proxy`, `redis`, `api`, `worker`) in Docker
-3. host UI runtime (`web-admin`, `iOS simulator mobile`)
+1. local DB migrations (`db:migrate:dev`) + drift check (`db:doctor:dev`)
+2. backend infra boot (`postgres`, `redis`, `api`, `worker`) in Docker
+3. host UI runtime (`web-admin`, mobile prompt: simulator or physical device)
+
+`pnpm prod` runs:
+
+1. Cloud SQL proxy prerequisite checks
+2. DB drift check (`db:doctor`)
+3. backend infra boot (`cloud-sql-proxy`, `redis`, `api`, `worker`) in Docker
+4. host UI runtime (`web-admin`, mobile prompt: simulator or physical device)
 
 ### Local setup (no Cloud SQL)
 
