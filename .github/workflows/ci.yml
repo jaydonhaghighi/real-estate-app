@@ -17,7 +17,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: messaging_mvp
+          POSTGRES_DB: suivo
         ports:
           - 5432:5432
         options: >-
@@ -31,10 +31,10 @@ jobs:
           - 6379:6379
 
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/messaging_mvp
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/suivo
       REDIS_URL: redis://localhost:6379
       JWT_ISSUER: https://example-idp.com/
-      JWT_AUDIENCE: messaging-mvp-api
+      JWT_AUDIENCE: suivo-api
       JWT_JWKS_URI: https://example-idp.com/.well-known/jwks.json
 
     steps:

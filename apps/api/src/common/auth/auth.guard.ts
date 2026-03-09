@@ -77,7 +77,23 @@ export class AuthGuard implements CanActivate {
   }
 
   private async resolveUser(clerkId: string): Promise<UserContext> {
-    const existing = await this.databaseService.query<{
+    const existing = await this.findByClerkId(clerkId);
+
+    if (existing.rows[0]) {
+      return {
+        userId: existing.rows[0].id,
+        teamId: existing.rows[0].team_id,
+        role: existing.rows[0].role
+      };
+    }
+
+    throw new UnauthorizedException(
+      'No linked user account found. Ask a team admin to provision your account.'
+    );
+  }
+
+  private findByClerkId(clerkId: string) {
+    return this.databaseService.query<{
       id: string;
       team_id: string;
       role: 'AGENT' | 'TEAM_LEAD';
@@ -90,40 +106,6 @@ export class AuthGuard implements CanActivate {
        WHERE u.clerk_id = $1
        LIMIT 1`,
       [clerkId]
-    );
-
-    if (existing.rows[0]) {
-      return {
-        userId: existing.rows[0].id,
-        teamId: existing.rows[0].team_id,
-        role: existing.rows[0].role
-      };
-    }
-
-    if (this.configService.get<string>('NODE_ENV') !== 'production') {
-      const linked = await this.databaseService.query<{
-        id: string;
-        team_id: string;
-        role: 'AGENT' | 'TEAM_LEAD';
-      }>(
-        `UPDATE "User"
-         SET clerk_id = $1
-         WHERE clerk_id IS NULL AND role = 'AGENT'
-         RETURNING id, team_id, role`,
-        [clerkId]
-      );
-
-      if (linked.rows[0]) {
-        return {
-          userId: linked.rows[0].id,
-          teamId: linked.rows[0].team_id,
-          role: linked.rows[0].role
-        };
-      }
-    }
-
-    throw new UnauthorizedException(
-      'No linked user account found. Ask a team admin to provision your account.'
     );
   }
 }

@@ -1,6 +1,6 @@
-import { useAuth } from '@clerk/clerk-expo';
-import { PropsWithChildren, useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useAuth, useClerk } from '@clerk/clerk-expo';
+import { PropsWithChildren, useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { useCurrentUser } from '../lib/current-user';
 import { OnboardingSeed } from '../lib/onboarding';
@@ -13,14 +13,43 @@ export function AuthGate({ children }: PropsWithChildren): JSX.Element {
   const { colors } = useTabTheme();
   const styles = createStyles(colors);
   const { isSignedIn, isLoaded } = useAuth();
+  const { signOut } = useClerk();
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
   const [onboardingSeed, setOnboardingSeed] = useState<OnboardingSeed | null>(null);
+  const hasAttemptedErrorSignOut = useRef(false);
   const currentUser = useCurrentUser({ enabled: isLoaded && isSignedIn });
 
   const completeOnboarding = useCallback(() => {
     setOnboardingSeed(null);
     void currentUser.refetch();
   }, [currentUser]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) {
+      hasAttemptedErrorSignOut.current = false;
+      return;
+    }
+
+    if (currentUser.isLoading || currentUser.isFetching || currentUser.isUnprovisioned || onboardingSeed) {
+      return;
+    }
+
+    if (!currentUser.error || hasAttemptedErrorSignOut.current) {
+      return;
+    }
+
+    hasAttemptedErrorSignOut.current = true;
+    void signOut();
+  }, [
+    currentUser.error,
+    currentUser.isFetching,
+    currentUser.isLoading,
+    currentUser.isUnprovisioned,
+    isLoaded,
+    isSignedIn,
+    onboardingSeed,
+    signOut
+  ]);
 
   if (!isLoaded) {
     return <></>;
@@ -58,10 +87,8 @@ export function AuthGate({ children }: PropsWithChildren): JSX.Element {
     return (
       <View style={styles.centered}>
         <Text style={styles.errorTitle}>Unable to load account</Text>
-        <Text style={styles.errorBody}>{currentUser.error.message}</Text>
-        <Pressable style={styles.retryButton} onPress={() => void currentUser.refetch()}>
-          <Text style={styles.retryText}>Retry</Text>
-        </Pressable>
+        <Text style={styles.errorBody}>Signing you out and returning to sign in...</Text>
+        <ActivityIndicator color={colors.primary} style={styles.errorSpinner} />
       </View>
     );
   }
@@ -89,16 +116,8 @@ function createStyles(colors: ReturnType<typeof useTabTheme>['colors']) {
       marginTop: 8,
       textAlign: 'center'
     },
-    retryButton: {
-      marginTop: 16,
-      backgroundColor: colors.primary,
-      borderRadius: 10,
-      paddingHorizontal: 18,
-      paddingVertical: 10
-    },
-    retryText: {
-      color: colors.white,
-      fontWeight: '700'
+    errorSpinner: {
+      marginTop: 16
     }
   });
 }

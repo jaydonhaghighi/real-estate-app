@@ -92,6 +92,10 @@ describe('OnboardingService.register', () => {
       role: 'AGENT',
       onboarding_completed: true
     });
+    expect(query).toHaveBeenCalledWith(
+      "SELECT set_config('app.team_join_code_hash', $1, true)",
+      ['hashed-code']
+    );
     expect(teamCodeService.normalize).toHaveBeenCalledWith('abcd-1234');
     expect(teamCodeService.hash).toHaveBeenCalledWith('ABCD1234');
   });

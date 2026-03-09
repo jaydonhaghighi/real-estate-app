@@ -29,7 +29,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/messaging_mvp"
+      DATABASE_URL: "${DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:6432/suivo}"
       REDIS_URL: "redis://redis:6379"
     ports:
       - "3001:3001"
@@ -50,7 +50,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/messaging_mvp"
+      DATABASE_URL: "${DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:6432/suivo}"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - .:/workspace

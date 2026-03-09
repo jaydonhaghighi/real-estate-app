@@ -1,23 +1,23 @@
 {
   "expo": {
-    "name": "Messaging MVP",
-    "slug": "messaging-mvp",
+    "name": "Suivo",
+    "slug": "suivo",
     "version": "1.0.0",
     "orientation": "portrait",
-    "scheme": "messagingmvp",
+    "scheme": "suivo",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.jaydon-haghighi.messagingmvp"
+      "bundleIdentifier": "com.jaydon-haghighi.suivo"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#F5F2E8"
       },
-      "package": "com.jaydon_haghighi.messagingmvp"
+      "package": "com.jaydon_haghighi.suivo"
     },
     "plugins": [
       "expo-router"

@@ -10,7 +10,7 @@ blue()  { printf "\033[0;34m%s\033[0m\n" "$1"; }
 
 fail() { red "ERROR: $1"; exit 1; }
 
-blue "=== Messaging MVP Zero-Drift Setup ==="
+blue "=== Suivo Zero-Drift Setup ==="
 
 blue "Checking prerequisites..."
 command -v node >/dev/null 2>&1 || fail "Node.js is not installed. Expected Node 22 (see .nvmrc)."
