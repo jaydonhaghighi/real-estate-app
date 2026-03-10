@@ -42,5 +42,6 @@ push_secret() {
 
 push_secret "$ROOT_DIR/apps/mobile/.env" "mvp-dev-mobile-env"
 push_secret "$ROOT_DIR/.env" "mvp-dev-env"
+push_secret "$ROOT_DIR/.env" "suivo-dev-vm"
 
 echo "Environment push complete."

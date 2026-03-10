@@ -48,5 +48,6 @@ pull_secret() {
 
 pull_secret "mvp-dev-mobile-env" "$ROOT_DIR/apps/mobile/.env"
 pull_secret "mvp-dev-env" "$ROOT_DIR/.env"
+pull_secret "suivo-dev-vm" "$ROOT_DIR/.env"
 
 echo "Environment pull complete."
