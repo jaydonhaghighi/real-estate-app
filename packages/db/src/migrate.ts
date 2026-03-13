@@ -91,6 +91,7 @@ async function main(): Promise<void> {
 
   let lockAcquired = false;
   let runFailed = false;
+  let deferredLockReleaseError: unknown;
 
   try {
     await ensureMigrationTable(client);
@@ -145,13 +146,18 @@ async function main(): Promise<void> {
         await releaseMigrationLock(client);
       } catch (error) {
         if (!runFailed) {
-          throw error;
+          deferredLockReleaseError = error;
+        } else {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`Failed to release migration lock cleanly: ${message}\n`);
         }
-        const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`Failed to release migration lock cleanly: ${message}\n`);
       }
     }
     await client.end();
+  }
+
+  if (deferredLockReleaseError) {
+    throw deferredLockReleaseError;
   }
 }
 
