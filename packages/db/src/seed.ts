@@ -1,4 +1,5 @@
 import { Client } from 'pg';
+
 import { loadEnv } from './load-env';
 const defaultStaleRules = {
   new_lead_sla_minutes: 60,
