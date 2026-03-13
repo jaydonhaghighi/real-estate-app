@@ -46,7 +46,7 @@ describe('OutlookProviderClient', () => {
     expect(() => service.createOauthUrl('state-1')).toThrow('MICROSOFT_CLIENT_ID is not configured');
   });
 
-  it('exchanges oauth code and returns normalized user email', async () => {
+  it('exchanges oauth code and returns normalized mailbox auth data', async () => {
     const service = createService({
       MICROSOFT_CLIENT_ID: 'ms-client',
       MICROSOFT_CLIENT_SECRET: 'ms-secret',
@@ -62,7 +62,13 @@ describe('OutlookProviderClient', () => {
       );
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(service.exchangeCodeForEmail('oauth-code')).resolves.toBe('owner@example.com');
+    await expect(service.exchangeCodeForMailboxData('oauth-code')).resolves.toEqual({
+      email: 'owner@example.com',
+      accessToken: 'ms-access-token',
+      refreshToken: undefined,
+      accessTokenExpiresAt: undefined,
+      scope: undefined
+    });
   });
 
   it('throws when oauth token response does not include an access token', async () => {
@@ -75,7 +81,7 @@ describe('OutlookProviderClient', () => {
     const fetchMock = jest.fn().mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const promise = service.exchangeCodeForEmail('oauth-code');
+    const promise = service.exchangeCodeForMailboxData('oauth-code');
     await expect(promise).rejects.toBeInstanceOf(BadGatewayException);
     await expect(promise).rejects.toThrow('Microsoft OAuth token response missing access token');
   });
