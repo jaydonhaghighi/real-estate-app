@@ -1,20 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useUser } from '@clerk/clerk-expo';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import {
+  Alert,
   Animated,
   Easing,
+  Image,
   LayoutAnimation,
+  Linking,
+  Modal,
   PanResponder,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   UIManager,
-  View,
+  View
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 
 import { apiGet, apiPost } from '../../lib/api';
@@ -30,6 +36,7 @@ interface TaskCard {
   id: string;
   lead_id: string;
   due_at: string;
+  mailbox_email_sent_at?: string;
   type: string;
   lead_state: string;
   summary?: string;
@@ -37,54 +44,339 @@ interface TaskCard {
   primary_phone?: string;
 }
 
+interface CompletedDeckTask {
+  task: TaskCard;
+  completedAt: string;
+}
+
+type SnoozeMode = 'today' | 'tomorrow' | 'next_week';
+type DeckTab = 'today' | 'upcoming' | 'completed';
+type ContactAction = 'call' | 'email' | 'sms';
+type FeatherName = React.ComponentProps<typeof Feather>['name'];
+
 const SWIPE_THRESHOLD = 120;
 const SWIPE_OUT_DISTANCE = 400;
 const MAX_ROTATION = 5;
 
+const DECK_TABS: Array<{ key: DeckTab; label: string }> = [
+  { key: 'today', label: 'Today' },
+  { key: 'upcoming', label: 'Upcoming' },
+  { key: 'completed', label: 'Completed' }
+];
+
+const SNOOZE_OPTIONS: Array<{ key: SnoozeMode; label: string }> = [
+  { key: 'today', label: 'Later today' },
+  { key: 'tomorrow', label: 'Tomorrow' },
+  { key: 'next_week', label: 'Next week' }
+];
+
+const HERO_GRADIENT_STOPS = [
+  { stop: 0.174, color: '#1F2129' },
+  { stop: 0.3344, color: '#262940' },
+  { stop: 0.5678, color: '#23263D' },
+  { stop: 0.7808, color: '#1A1A20' }
+] as const;
+
+type RGB = { r: number; g: number; b: number };
+
+function hexToRgb(hex: string): RGB {
+  const value = hex.replace('#', '');
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16),
+    g: Number.parseInt(value.slice(2, 4), 16),
+    b: Number.parseInt(value.slice(4, 6), 16)
+  };
+}
+
+function rgbToHex(rgb: RGB): string {
+  const toHex = (value: number) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0');
+  return `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
+}
+
+function interpolateColor(from: RGB, to: RGB, t: number): RGB {
+  return {
+    r: from.r + (to.r - from.r) * t,
+    g: from.g + (to.g - from.g) * t,
+    b: from.b + (to.b - from.b) * t
+  };
+}
+
+function gradientColorAt(position: number): string {
+  if (position <= HERO_GRADIENT_STOPS[0].stop) {
+    return HERO_GRADIENT_STOPS[0].color;
+  }
+  if (position >= HERO_GRADIENT_STOPS[HERO_GRADIENT_STOPS.length - 1].stop) {
+    return HERO_GRADIENT_STOPS[HERO_GRADIENT_STOPS.length - 1].color;
+  }
+
+  for (let index = 0; index < HERO_GRADIENT_STOPS.length - 1; index += 1) {
+    const start = HERO_GRADIENT_STOPS[index];
+    const end = HERO_GRADIENT_STOPS[index + 1];
+    if (position >= start.stop && position <= end.stop) {
+      const range = end.stop - start.stop;
+      const t = range === 0 ? 0 : (position - start.stop) / range;
+      return rgbToHex(interpolateColor(hexToRgb(start.color), hexToRgb(end.color), t));
+    }
+  }
+
+  return HERO_GRADIENT_STOPS[0].color;
+}
+
+const HERO_GRADIENT_BANDS = Array.from({ length: 64 }, (_, index) => {
+  const from = index / 64;
+  const to = (index + 1) / 64;
+  const mid = (from + to) / 2;
+
+  return {
+    key: `hero-band-${index}`,
+    topPct: from * 100,
+    heightPct: (to - from) * 100 + 0.8,
+    color: gradientColorAt(mid)
+  };
+});
+
+function parseDate(value: string | undefined): Date | null {
+  if (!value) {
+    return null;
+  }
+
+  const raw = value.trim();
+  if (!raw) {
+    return null;
+  }
+
+  const direct = new Date(raw);
+  if (!Number.isNaN(direct.getTime())) {
+    return direct;
+  }
+
+  // Normalize common Postgres timestamp formats like "2026-03-11 16:18:53+00".
+  const normalized = raw
+    .replace(' ', 'T')
+    .replace(/([+-]\d{2})$/, '$1:00');
+
+  const parsed = new Date(normalized);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)) {
+    const asUtc = new Date(`${normalized}Z`);
+    if (!Number.isNaN(asUtc.getTime())) {
+      return asUtc;
+    }
+  }
+
+  return null;
+}
+
+function startOfLocalDay(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+}
+
+function toTitleCase(token: string): string {
+  if (!token) {
+    return token;
+  }
+  return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
+}
+
 function formatTaskType(value: string): string {
   return value
     .split('_')
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .map((word) => toTitleCase(word))
     .join(' ');
-}
-
-function formatDueDate(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return 'Unknown';
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function getPrimaryContact(task: TaskCard): string {
   return task.primary_email ?? task.primary_phone ?? 'No contact';
 }
 
-function getStateColor(colors: TabThemeColors, state: string): string {
-  if (state === 'Active') return colors.accent;
-  if (state === 'At-Risk') return colors.warning;
-  if (state === 'Stale') return '#FF7A7A';
-  return colors.primary;
+function formatContactName(contact: string): string {
+  if (!contact.includes('@')) {
+    return contact;
+  }
+
+  const [localPart] = contact.split('@');
+  const words = localPart
+    .replace(/[._-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (words.length === 0) {
+    return contact;
+  }
+
+  return words.map((word) => toTitleCase(word)).join(' ');
+}
+
+function formatRelativeTime(value: string | undefined): string {
+  const parsed = parseDate(value);
+  if (!parsed) {
+    return 'Unknown';
+  }
+
+  const now = new Date();
+  const diffMs = now.getTime() - parsed.getTime();
+  const absDiff = Math.abs(diffMs);
+
+  if (absDiff < 2 * 60_000) {
+    return 'Just now';
+  }
+
+  if (absDiff < 60 * 60_000) {
+    return `${Math.max(1, Math.round(absDiff / 60_000))} min ago`;
+  }
+
+  const nowDay = startOfLocalDay(now).getTime();
+  const parsedDay = startOfLocalDay(parsed).getTime();
+  const dayDiff = Math.round((nowDay - parsedDay) / 86_400_000);
+
+  if (dayDiff === 0) {
+    return parsed.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+  if (dayDiff === 1) {
+    return 'Yesterday';
+  }
+  if (dayDiff > 1 && dayDiff < 7) {
+    return parsed.toLocaleDateString(undefined, { weekday: 'short' });
+  }
+
+  return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatCardTimeLabel(task: TaskCard, completedAt?: string): string {
+  if (completedAt) {
+    return `Done ${formatRelativeTime(completedAt)}`;
+  }
+
+  if (task.mailbox_email_sent_at) {
+    return formatRelativeTime(task.mailbox_email_sent_at);
+  }
+
+  return formatRelativeTime(task.due_at);
+}
+
+function stateChip(task: TaskCard): { label: string; icon: FeatherName; tint: string } {
+  if (task.lead_state === 'At-Risk') {
+    return { label: 'At risk', icon: 'alert-triangle', tint: '#E2CEA0' };
+  }
+  if (task.lead_state === 'Stale') {
+    return { label: 'Attention', icon: 'eye', tint: '#DED4C2' };
+  }
+
+  const latestInbound = parseDate(task.mailbox_email_sent_at);
+  if (latestInbound && Date.now() - latestInbound.getTime() <= 45 * 60_000) {
+    return { label: 'New', icon: 'star', tint: '#EFF0F7' };
+  }
+
+  return { label: 'Active', icon: 'activity', tint: '#CDD8FF' };
+}
+
+function compactAiLine(value: string, options?: { maxWords?: number; maxChars?: number }): string {
+  const maxWords = options?.maxWords ?? 8;
+  const maxChars = options?.maxChars ?? 56;
+  const cleaned = value
+    .replace(/^wants:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned) {
+    return '';
+  }
+
+  const firstClause = cleaned.split(/[.!?]/)[0]?.trim() ?? cleaned;
+  const words = firstClause.split(' ').filter(Boolean);
+  const compacted = words.slice(0, maxWords).join(' ');
+  const clipped = compacted.length > maxChars ? `${compacted.slice(0, maxChars - 1).trimEnd()}...` : compacted;
+  return clipped;
+}
+
+function wantsLine(task: TaskCard): string {
+  const summary = task.summary?.trim();
+  if (summary) {
+    const aiContext = compactAiLine(summary, { maxWords: 7, maxChars: 48 });
+    if (aiContext) {
+      return `Wants: ${aiContext}`;
+    }
+  }
+
+  const type = task.type.toLowerCase();
+  if (type.includes('email')) {
+    return 'Wants: quick email response';
+  }
+  if (type.includes('call')) {
+    return 'Wants: quick call update';
+  }
+  if (type.includes('sms') || type.includes('text') || type.includes('message')) {
+    return 'Wants: short text follow-up';
+  }
+  return `Wants: ${compactAiLine(formatTaskType(task.type).toLowerCase(), { maxWords: 6, maxChars: 40 })}`;
+}
+
+function nextActionLine(task: TaskCard): string {
+  const contactFirstName = formatContactName(getPrimaryContact(task)).split(' ')[0] || 'lead';
+  const type = task.type.toLowerCase();
+
+  if (type.includes('email')) {
+    return `Email ${contactFirstName} with one clear next step.`;
+  }
+  if (type.includes('call')) {
+    return `Call ${contactFirstName} and confirm timeline.`;
+  }
+  if (type.includes('sms') || type.includes('text') || type.includes('message')) {
+    return `Text ${contactFirstName} a short follow-up.`;
+  }
+
+  const summary = task.summary?.trim();
+  if (summary) {
+    const compact = compactAiLine(summary, { maxWords: 10, maxChars: 78 });
+    if (compact) {
+      return compact;
+    }
+  }
+
+  return `Follow up on ${formatTaskType(task.type).toLowerCase()}.`;
+}
+
+function dueTimeMs(task: TaskCard): number {
+  return parseDate(task.due_at)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+}
+
+function greetingLabel(date = new Date()): string {
+  const hour = date.getHours();
+  if (hour < 12) {
+    return 'Good morning';
+  }
+  if (hour < 18) {
+    return 'Good afternoon';
+  }
+  return 'Good evening';
 }
 
 const reflow = () =>
   LayoutAnimation.configureNext({
-    duration: 280,
+    duration: 260,
     update: { type: LayoutAnimation.Types.easeInEaseOut },
-    delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity },
+    delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity }
   });
-
-/* ────────────────────────────────────────────────────────────
-   Swipeable Task Card
-   Swipe right → Done  ·  Swipe left → Snooze  ·  Tap → Open
-   ──────────────────────────────────────────────────────────── */
 
 interface TaskSwipeCardProps {
   task: TaskCard;
   index: number;
   colors: TabThemeColors;
   mode: 'dark' | 'light';
-  onDone: (taskId: string) => void;
-  onSnooze: (taskId: string) => void;
+  completedAt?: string;
+  contactMenuOpen: boolean;
+  snoozeMenuOpen: boolean;
+  onDone: (task: TaskCard) => void;
+  onSnooze: (task: TaskCard, mode: SnoozeMode) => void;
+  onContactAction: (task: TaskCard, action: ContactAction) => void;
   onOpenLead: (task: TaskCard) => void;
+  onOpenContactMenu: (task: TaskCard) => void;
+  onOpenSnoozeMenu: (task: TaskCard) => void;
+  onCloseMenus: () => void;
   onSwipeStart: () => void;
   onSwipeEnd: () => void;
 }
@@ -94,53 +386,64 @@ function TaskSwipeCard({
   index,
   colors,
   mode,
+  completedAt,
+  contactMenuOpen,
+  snoozeMenuOpen,
   onDone,
   onSnooze,
+  onContactAction,
   onOpenLead,
+  onOpenContactMenu,
+  onOpenSnoozeMenu,
+  onCloseMenus,
   onSwipeStart,
-  onSwipeEnd,
+  onSwipeEnd
 }: TaskSwipeCardProps) {
   const cs = useMemo(() => cardStyles(colors, mode), [colors, mode]);
   const translateX = useRef(new Animated.Value(0)).current;
   const entrance = useRef(new Animated.Value(0)).current;
+  const isCompleted = Boolean(completedAt);
 
-  const stateColor = getStateColor(colors, task.lead_state);
-  const contact = getPrimaryContact(task);
-  const contactInitial = contact.charAt(0).toUpperCase();
+  const chip = stateChip(task);
+  const displayName = formatContactName(getPrimaryContact(task));
+  const activityLabel = formatCardTimeLabel(task, completedAt);
+  const channelIcon: FeatherName = task.type.includes('call')
+    ? 'phone'
+    : task.type.includes('email')
+      ? 'mail'
+      : 'message-square';
 
-  // Staggered entrance
   useEffect(() => {
     Animated.timing(entrance, {
       toValue: 1,
-      duration: 350,
-      delay: index * 60,
-      easing: Easing.out(Easing.back(1.4)),
-      useNativeDriver: true,
+      duration: 320,
+      delay: index * 50,
+      easing: Easing.out(Easing.back(1.3)),
+      useNativeDriver: true
     }).start();
-  }, []);
+  }, [entrance, index]);
 
   const rotateZ = translateX.interpolate({
     inputRange: [-SWIPE_OUT_DISTANCE, 0, SWIPE_OUT_DISTANCE],
     outputRange: [`-${MAX_ROTATION}deg`, '0deg', `${MAX_ROTATION}deg`],
-    extrapolate: 'clamp',
+    extrapolate: 'clamp'
   });
 
   const doneHintOpacity = translateX.interpolate({
     inputRange: [0, 30, SWIPE_THRESHOLD],
-    outputRange: [0, 0.4, 1],
-    extrapolate: 'clamp',
+    outputRange: [0, 0.35, 1],
+    extrapolate: 'clamp'
   });
 
   const snoozeHintOpacity = translateX.interpolate({
     inputRange: [-SWIPE_THRESHOLD, -30, 0],
-    outputRange: [1, 0.4, 0],
-    extrapolate: 'clamp',
+    outputRange: [1, 0.35, 0],
+    extrapolate: 'clamp'
   });
 
-  const entranceOpacity = entrance;
   const entranceTranslateY = entrance.interpolate({
     inputRange: [0, 1],
-    outputRange: [24, 0],
+    outputRange: [22, 0]
   });
 
   const resetPosition = useCallback(() => {
@@ -149,18 +452,18 @@ function TaskSwipeCard({
       damping: 20,
       stiffness: 180,
       mass: 0.8,
-      useNativeDriver: true,
+      useNativeDriver: true
     }).start(() => onSwipeEnd());
-  }, [translateX, onSwipeEnd]);
+  }, [onSwipeEnd, translateX]);
 
   const flyOut = useCallback(
     (direction: 'right' | 'left', cb: () => void) => {
       const toValue = direction === 'right' ? SWIPE_OUT_DISTANCE : -SWIPE_OUT_DISTANCE;
       Animated.timing(translateX, {
         toValue,
-        duration: 260,
+        duration: 240,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
+        useNativeDriver: true
       }).start(({ finished }) => {
         onSwipeEnd();
         if (finished) {
@@ -169,7 +472,7 @@ function TaskSwipeCard({
         }
       });
     },
-    [translateX, onSwipeEnd]
+    [onSwipeEnd, translateX]
   );
 
   const panResponder = useMemo(
@@ -177,130 +480,259 @@ function TaskSwipeCard({
       PanResponder.create({
         onStartShouldSetPanResponder: () => false,
         onStartShouldSetPanResponderCapture: () => false,
-        onMoveShouldSetPanResponder: (_e, gs) =>
-          Math.abs(gs.dx) > 8 && Math.abs(gs.dx) > Math.abs(gs.dy) * 0.9,
+        onMoveShouldSetPanResponder: (_event, gestureState) =>
+          !isCompleted
+          && Math.abs(gestureState.dx) > 8
+          && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 0.9,
         onMoveShouldSetPanResponderCapture: () => false,
         onPanResponderGrant: () => {
-          translateX.stopAnimation();
-          onSwipeStart();
-        },
-        onPanResponderMove: (_e, gs) => {
-          const clamped = Math.max(-SWIPE_OUT_DISTANCE, Math.min(SWIPE_OUT_DISTANCE, gs.dx));
-          translateX.setValue(clamped);
-        },
-        onPanResponderRelease: (_e, gs) => {
-          if (gs.dx > SWIPE_THRESHOLD) {
-            flyOut('right', () => onDone(task.id));
+          if (isCompleted) {
             return;
           }
-          if (gs.dx < -SWIPE_THRESHOLD) {
-            flyOut('left', () => onSnooze(task.id));
+          translateX.stopAnimation();
+          onCloseMenus();
+          onSwipeStart();
+        },
+        onPanResponderMove: (_event, gestureState) => {
+          if (isCompleted) {
+            return;
+          }
+          const clamped = Math.max(-SWIPE_OUT_DISTANCE, Math.min(SWIPE_OUT_DISTANCE, gestureState.dx));
+          translateX.setValue(clamped);
+        },
+        onPanResponderRelease: (_event, gestureState) => {
+          if (isCompleted) {
+            return;
+          }
+
+          if (gestureState.dx > SWIPE_THRESHOLD) {
+            flyOut('right', () => onDone(task));
+            return;
+          }
+          if (gestureState.dx < -SWIPE_THRESHOLD) {
+            flyOut('left', () => onSnooze(task, 'tomorrow'));
             return;
           }
           resetPosition();
         },
-        onPanResponderTerminate: resetPosition,
-        // Allow native controls (including tab bar buttons) to take focus when needed.
+        onPanResponderTerminate: () => {
+          if (!isCompleted) {
+            resetPosition();
+          }
+        },
         onPanResponderTerminationRequest: () => true,
-        onShouldBlockNativeResponder: () => false,
+        onShouldBlockNativeResponder: () => false
       }),
-    [translateX, onSwipeStart, onDone, onSnooze, task.id, flyOut, resetPosition]
+    [flyOut, isCompleted, onCloseMenus, onDone, onSnooze, onSwipeStart, resetPosition, task, translateX]
   );
 
   return (
     <Animated.View
       style={[
         cs.wrapper,
-        { opacity: entranceOpacity, transform: [{ translateY: entranceTranslateY }] },
+        {
+          opacity: entrance,
+          transform: [{ translateY: entranceTranslateY }]
+        }
       ]}
     >
-      {/* Full-bleed colored hints that reveal behind the card during drag */}
-      <Animated.View style={[cs.hintFull, cs.hintDone, { opacity: doneHintOpacity }]}>
-        <Feather name="check-circle" size={18} color={colors.white} style={{ marginRight: 6 }} />
-        <Text style={cs.hintLabel}>Done</Text>
-      </Animated.View>
-      <Animated.View style={[cs.hintFull, cs.hintSnooze, { opacity: snoozeHintOpacity }]}>
-        <Feather name="clock" size={18} color={colors.white} style={{ marginRight: 6 }} />
-        <Text style={cs.hintLabel}>Snooze</Text>
-      </Animated.View>
+      {!isCompleted ? (
+        <>
+          <Animated.View style={[cs.hintFull, cs.hintDone, { opacity: doneHintOpacity }]}>
+            <Feather name="check-circle" size={18} color={colors.white} style={{ marginRight: 6 }} />
+            <Text style={cs.hintLabel}>Done</Text>
+          </Animated.View>
+          <Animated.View style={[cs.hintFull, cs.hintSnooze, { opacity: snoozeHintOpacity }]}>
+            <Feather name="clock" size={18} color={colors.white} style={{ marginRight: 6 }} />
+            <Text style={cs.hintLabel}>Snooze</Text>
+          </Animated.View>
+        </>
+      ) : null}
 
-      {/* Draggable card */}
       <Animated.View
-        style={[cs.cardMotion, { transform: [{ translateX }, { rotateZ }] }]}
-        {...panResponder.panHandlers}
+        style={[cs.cardMotion, { transform: [{ translateX }, { rotateZ: isCompleted ? '0deg' : rotateZ }] }]}
+        {...(!isCompleted ? panResponder.panHandlers : {})}
       >
-        <Pressable onPress={() => onOpenLead(task)}>
-          <View style={cs.card}>
-            {/* State pill + due date */}
-            <View style={cs.topRow}>
-              <View style={[cs.pill, { borderColor: stateColor }]}>
-                <Text style={[cs.pillText, { color: stateColor }]}>{task.lead_state}</Text>
+        <Pressable
+          style={cs.card}
+          onPress={() => {
+            onCloseMenus();
+            onOpenLead(task);
+          }}
+        >
+          <View style={cs.topRow}>
+            <View style={cs.badgeRow}>
+              <View style={cs.stateBadge}>
+                <Feather name={chip.icon} size={13} color="#FFFFFF" />
+                <Text style={cs.stateBadgeText}>{chip.label}</Text>
               </View>
-              <Text style={cs.due}>{formatDueDate(task.due_at)}</Text>
+              <Text style={cs.timeLabel}>{activityLabel}</Text>
             </View>
+            <Pressable
+              style={cs.mailButton}
+              onPress={() => {
+                onCloseMenus();
+                onOpenLead(task);
+              }}
+            >
+              <Feather name={channelIcon} size={14} color={cs.iconTone.color} />
+            </Pressable>
+          </View>
 
-            {/* Contact identity */}
-            <View style={cs.identity}>
-              <View style={cs.avatar}>
-                <Text style={cs.avatarLetter}>{contactInitial}</Text>
-              </View>
-              <View style={cs.identityText}>
-                <Text style={cs.contactName} numberOfLines={1}>
-                  {contact}
-                </Text>
-                <Text style={cs.taskType}>{formatTaskType(task.type)}</Text>
-              </View>
-            </View>
+          <View style={cs.identityRow}>
+            <Pressable
+              style={cs.identityPress}
+              onPress={() => {
+                onCloseMenus();
+                onOpenLead(task);
+              }}
+            >
+              <Text style={cs.contactName} numberOfLines={1}>
+                {displayName}
+              </Text>
+              <Text style={cs.wantsLine} numberOfLines={1}>
+                {wantsLine(task)}
+              </Text>
+            </Pressable>
 
-            <Text style={cs.summary} numberOfLines={2}>
-              {task.summary ?? 'No summary yet'}
-            </Text>
-
-            {/* Action buttons */}
-            <View style={cs.actionsRow}>
+            {!isCompleted ? (
               <Pressable
-                style={[cs.btn, cs.btnDone]}
+                style={cs.menuButton}
                 onPress={() => {
-                  reflow();
-                  onDone(task.id);
+                  onCloseMenus();
+                  onOpenContactMenu(task);
                 }}
               >
-                <Text style={cs.btnDoneLabel}>Done</Text>
+                <Feather name="more-horizontal" size={16} color={cs.iconTone.color} />
               </Pressable>
+            ) : null}
+          </View>
+
+          <Pressable
+            style={cs.actionStrip}
+            onPress={() => {
+              onCloseMenus();
+              onOpenLead(task);
+            }}
+          >
+            <Feather name="zap" size={17} color={cs.iconTone.color} style={{ marginRight: 10 }} />
+            <View style={cs.actionTextWrap}>
+              <Text style={cs.actionText} numberOfLines={2}>
+                {nextActionLine(task)}
+              </Text>
+            </View>
+          </Pressable>
+
+          <View style={cs.footerRow}>
+            {isCompleted ? (
+              <View style={cs.donePill}>
+                <Feather name="check-circle" size={14} color={cs.iconTone.color} style={{ marginRight: 6 }} />
+                <Text style={cs.donePillLabel}>Completed</Text>
+              </View>
+            ) : (
               <Pressable
-                style={[cs.btn, cs.btnSnooze]}
+                style={cs.snoozeAction}
                 onPress={() => {
-                  reflow();
-                  onSnooze(task.id);
+                  onCloseMenus();
+                  onOpenSnoozeMenu(task);
                 }}
               >
-                <Text style={cs.btnSnoozeLabel}>Snooze</Text>
+                <Feather name="clock" size={14} color={cs.snoozeLabel.color} style={{ marginRight: 6 }} />
+                <Text style={cs.snoozeLabel}>Snooze</Text>
+                <Feather name="chevron-right" size={16} color={cs.snoozeLabel.color} style={cs.snoozeChevron} />
               </Pressable>
-              <Pressable style={[cs.btn, cs.btnOpen]} onPress={() => onOpenLead(task)}>
-                <Text style={cs.btnOpenLabel}>Open →</Text>
-              </Pressable>
-            </View>
+            )}
           </View>
         </Pressable>
       </Animated.View>
+
+      {!isCompleted ? (
+        <>
+          <Modal
+            transparent
+            animationType="fade"
+            visible={contactMenuOpen}
+            onRequestClose={onCloseMenus}
+          >
+            <View style={cs.modalBackdrop}>
+              <Pressable style={cs.modalBackdropPress} onPress={onCloseMenus} />
+              <View style={cs.modalCard}>
+                <Text style={cs.modalTitle}>Contact</Text>
+                <Pressable style={cs.modalItem} onPress={() => onContactAction(task, 'call')}>
+                  <Feather name="phone" size={16} color={cs.iconTone.color} style={{ marginRight: 10 }} />
+                  <Text style={cs.modalItemText}>Call</Text>
+                </Pressable>
+                <View style={cs.modalSeparator} />
+                <Pressable style={cs.modalItem} onPress={() => onContactAction(task, 'email')}>
+                  <Feather name="mail" size={16} color={cs.iconTone.color} style={{ marginRight: 10 }} />
+                  <Text style={cs.modalItemText}>Email</Text>
+                </Pressable>
+                <View style={cs.modalSeparator} />
+                <Pressable style={cs.modalItem} onPress={() => onContactAction(task, 'sms')}>
+                  <Feather name="message-square" size={16} color={cs.iconTone.color} style={{ marginRight: 10 }} />
+                  <Text style={cs.modalItemText}>Message SMS</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+
+          <Modal
+            transparent
+            animationType="fade"
+            visible={snoozeMenuOpen}
+            onRequestClose={onCloseMenus}
+          >
+            <View style={cs.modalBackdrop}>
+              <Pressable style={cs.modalBackdropPress} onPress={onCloseMenus} />
+              <View style={cs.modalCard}>
+                <Text style={cs.modalTitle}>Snooze</Text>
+                {SNOOZE_OPTIONS.map((option, index) => (
+                  <View key={option.key}>
+                    <Pressable style={cs.modalItem} onPress={() => onSnooze(task, option.key)}>
+                      <Text style={cs.modalItemText}>{option.label}</Text>
+                    </Pressable>
+                    {index < SNOOZE_OPTIONS.length - 1 ? <View style={cs.modalSeparator} /> : null}
+                  </View>
+                ))}
+              </View>
+            </View>
+          </Modal>
+        </>
+      ) : null}
     </Animated.View>
   );
 }
 
-/* ────────────────────────────────────────────────────────────
-   Task Deck Screen
-   ──────────────────────────────────────────────────────────── */
-
 export default function TaskDeckScreen(): JSX.Element {
   const { colors, mode } = useTabTheme();
-  const ss = useMemo(() => screenStyles(colors), [colors]);
+  const ss = useMemo(() => screenStyles(colors, mode), [colors, mode]);
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const qc = useQueryClient();
-  const [swipeCount, setSwipeCount] = useState(0);
   const currentUser = useCurrentUser();
+  const { user } = useUser();
+
+  const taskDeckQueryKey = useMemo(
+    () =>
+      [
+        'task-deck',
+        currentUser.data?.userId,
+        currentUser.data?.teamId,
+        currentUser.data?.role
+      ] as const,
+    [currentUser.data?.role, currentUser.data?.teamId, currentUser.data?.userId]
+  );
+
+  const [activeTab, setActiveTab] = useState<DeckTab>('today');
+  const [swipeCount, setSwipeCount] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [contactTaskId, setContactTaskId] = useState<string | null>(null);
+  const [snoozeTaskId, setSnoozeTaskId] = useState<string | null>(null);
+  const [completedTasks, setCompletedTasks] = useState<CompletedDeckTask[]>([]);
+  const [initialDeckSize, setInitialDeckSize] = useState<number | null>(null);
 
   const tasks = useQuery({
-    queryKey: ['task-deck', currentUser.data?.userId, currentUser.data?.teamId, currentUser.data?.role],
+    queryKey: taskDeckQueryKey,
     queryFn: () => apiGet<TaskCard[]>('/task-deck'),
     staleTime: 5_000,
     refetchInterval: 10_000,
@@ -308,367 +740,884 @@ export default function TaskDeckScreen(): JSX.Element {
     refetchOnReconnect: true
   });
 
+  useEffect(() => {
+    if (initialDeckSize === null && tasks.data) {
+      setInitialDeckSize(tasks.data.length);
+    }
+  }, [initialDeckSize, tasks.data]);
+
+  const closeMenus = useCallback(() => {
+    setContactTaskId(null);
+    setSnoozeTaskId(null);
+  }, []);
+
+  useEffect(() => {
+    const openIds = new Set((tasks.data ?? []).map((task) => task.id));
+    if (contactTaskId && !openIds.has(contactTaskId)) {
+      setContactTaskId(null);
+    }
+    if (snoozeTaskId && !openIds.has(snoozeTaskId)) {
+      setSnoozeTaskId(null);
+    }
+  }, [contactTaskId, snoozeTaskId, tasks.data]);
+
   const doneMutation = useMutation({
     mutationFn: (taskId: string) => apiPost(`/tasks/${taskId}/done`, {}),
     onMutate: async (taskId) => {
       await qc.cancelQueries({ queryKey: ['task-deck'] });
-      const prev = qc.getQueryData<TaskCard[]>(['task-deck']);
-      qc.setQueryData<TaskCard[]>(['task-deck'], (old) => old?.filter((t) => t.id !== taskId));
+      const prev = qc.getQueryData<TaskCard[]>(taskDeckQueryKey);
+      qc.setQueryData<TaskCard[]>(taskDeckQueryKey, (old) => old?.filter((task) => task.id !== taskId));
       return { prev };
     },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['task-deck'], ctx.prev);
+    onError: (_error, taskId, context) => {
+      if (context?.prev) {
+        qc.setQueryData(taskDeckQueryKey, context.prev);
+      }
+      setCompletedTasks((prev) => prev.filter((entry) => entry.task.id !== taskId));
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['task-deck'] }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['task-deck'] })
   });
 
   const snoozeMutation = useMutation({
-    mutationFn: (taskId: string) => apiPost(`/tasks/${taskId}/snooze`, { mode: 'tomorrow' }),
-    onMutate: async (taskId) => {
+    mutationFn: ({ taskId, mode: snoozeMode }: { taskId: string; mode: SnoozeMode }) =>
+      apiPost(`/tasks/${taskId}/snooze`, { mode: snoozeMode }),
+    onMutate: async ({ taskId }) => {
       await qc.cancelQueries({ queryKey: ['task-deck'] });
-      const prev = qc.getQueryData<TaskCard[]>(['task-deck']);
-      qc.setQueryData<TaskCard[]>(['task-deck'], (old) => old?.filter((t) => t.id !== taskId));
+      const prev = qc.getQueryData<TaskCard[]>(taskDeckQueryKey);
+      qc.setQueryData<TaskCard[]>(taskDeckQueryKey, (old) => old?.filter((task) => task.id !== taskId));
       return { prev };
     },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['task-deck'], ctx.prev);
+    onError: (_error, _vars, context) => {
+      if (context?.prev) {
+        qc.setQueryData(taskDeckQueryKey, context.prev);
+      }
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['task-deck'] }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['task-deck'] })
   });
 
-  const openCount = tasks.data?.length ?? 0;
-  const atRiskCount = tasks.data?.filter((t) => t.lead_state === 'At-Risk').length ?? 0;
-  const staleCount = tasks.data?.filter((t) => t.lead_state === 'Stale').length ?? 0;
-  const todayLabel = new Date().toLocaleDateString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  });
+  const openTasks = tasks.data ?? [];
 
-  function openLead(task: TaskCard): void {
-    const params: Record<string, string> = {
-      id: task.lead_id,
-      lead_state: task.lead_state,
-      task_type: task.type,
-      due_at: task.due_at,
+  const { todayTasks, upcomingTasks } = useMemo(() => {
+    const now = new Date();
+    const tomorrowStart = startOfLocalDay(now);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+    const tomorrowStartMs = tomorrowStart.getTime();
+
+    const sorted = [...openTasks].sort((a, b) => dueTimeMs(a) - dueTimeMs(b));
+    const today: TaskCard[] = [];
+    const upcoming: TaskCard[] = [];
+
+    for (const task of sorted) {
+      const due = parseDate(task.due_at);
+      if (!due || due.getTime() < tomorrowStartMs) {
+        today.push(task);
+        continue;
+      }
+      upcoming.push(task);
+    }
+
+    return { todayTasks: today, upcomingTasks: upcoming };
+  }, [openTasks]);
+
+  const completedRows = useMemo(
+    () =>
+      [...completedTasks].sort((a, b) => {
+        const aTime = parseDate(a.completedAt)?.getTime() ?? 0;
+        const bTime = parseDate(b.completedAt)?.getTime() ?? 0;
+        return bTime - aTime;
+      }),
+    [completedTasks]
+  );
+
+  const visibleRows = useMemo<Array<{ task: TaskCard; completedAt?: string }>>(() => {
+    if (activeTab === 'today') {
+      return todayTasks.map((task) => ({ task }));
+    }
+    if (activeTab === 'upcoming') {
+      return upcomingTasks.map((task) => ({ task }));
+    }
+    return completedRows.map((entry) => ({ task: entry.task, completedAt: entry.completedAt }));
+  }, [activeTab, completedRows, todayTasks, upcomingTasks]);
+
+  const openCount = openTasks.length;
+  const atRiskCount = openTasks.filter((task) => task.lead_state === 'At-Risk').length;
+
+  const urgentCount = useMemo(() => {
+    const nowMs = Date.now();
+    return openTasks.filter((task) => {
+      const due = parseDate(task.due_at);
+      if (!due) {
+        return false;
+      }
+      return due.getTime() - nowMs <= 2 * 60 * 60_000;
+    }).length;
+  }, [openTasks]);
+
+  const waitingSummary = useMemo(() => {
+    const nowMs = Date.now();
+    const waitDays = openTasks
+      .map((task) => parseDate(task.mailbox_email_sent_at))
+      .filter((value): value is Date => Boolean(value))
+      .map((value) => Math.floor((nowMs - value.getTime()) / 86_400_000))
+      .filter((days) => days >= 1);
+
+    if (waitDays.length === 0) {
+      return { count: 0, maxDays: 0 };
+    }
+
+    return {
+      count: waitDays.length,
+      maxDays: Math.max(...waitDays)
     };
-    if (task.primary_email) params.primary_email = task.primary_email;
-    if (task.primary_phone) params.primary_phone = task.primary_phone;
-    router.push({ pathname: '/lead/[id]', params });
-  }
+  }, [openTasks]);
+
+  const trackedTotal = Math.max(initialDeckSize ?? 0, openCount + completedTasks.length, 1);
+  const clearedCount = completedTasks.length;
+  const progressPct = Math.round((clearedCount / trackedTotal) * 100);
+
+  const userDisplayName = useMemo(() => {
+    const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim();
+    if (name.length > 0) {
+      return name;
+    }
+    const email = user?.primaryEmailAddress?.emailAddress;
+    if (email) {
+      return formatContactName(email);
+    }
+    return 'Agent';
+  }, [user?.firstName, user?.lastName, user?.primaryEmailAddress?.emailAddress]);
+
+  const userInitials = useMemo(() => {
+    const parts = userDisplayName
+      .split(' ')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length === 0) {
+      return 'A';
+    }
+    return parts
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join('');
+  }, [userDisplayName]);
+
+  const waitingLabel =
+    waitingSummary.count > 0
+      ? `${waitingSummary.count} lead${waitingSummary.count === 1 ? '' : 's'} waiting`
+      : 'No leads waiting';
+
+  const onRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    closeMenus();
+    try {
+      await qc.invalidateQueries({ queryKey: ['task-deck'] });
+      await tasks.refetch();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [closeMenus, qc, tasks]);
+
+  const openLead = useCallback(
+    (task: TaskCard) => {
+      closeMenus();
+      const params: Record<string, string> = {
+        id: task.lead_id,
+        lead_state: task.lead_state,
+        task_type: task.type,
+        due_at: task.due_at
+      };
+
+      if (task.primary_email) {
+        params.primary_email = task.primary_email;
+      }
+      if (task.primary_phone) {
+        params.primary_phone = task.primary_phone;
+      }
+
+      router.push({ pathname: '/lead/[id]', params });
+    },
+    [closeMenus, router]
+  );
+
+  const handleDone = useCallback(
+    (task: TaskCard) => {
+      closeMenus();
+      setCompletedTasks((prev) => {
+        if (prev.some((entry) => entry.task.id === task.id)) {
+          return prev;
+        }
+        return [{ task, completedAt: new Date().toISOString() }, ...prev];
+      });
+      doneMutation.mutate(task.id);
+    },
+    [closeMenus, doneMutation]
+  );
+
+  const handleSnooze = useCallback(
+    (task: TaskCard, snoozeMode: SnoozeMode) => {
+      closeMenus();
+      snoozeMutation.mutate({ taskId: task.id, mode: snoozeMode });
+    },
+    [closeMenus, snoozeMutation]
+  );
+
+  const handleContactAction = useCallback(
+    async (task: TaskCard, action: ContactAction) => {
+      closeMenus();
+
+      const email = task.primary_email?.trim();
+      const phone = task.primary_phone?.trim();
+
+      let url: string | null = null;
+      if (action === 'email') {
+        if (!email) {
+          Alert.alert('No email found', 'This lead does not have an email address yet.');
+          return;
+        }
+        url = `mailto:${email}`;
+      } else if (action === 'call') {
+        if (!phone) {
+          Alert.alert('No phone found', 'This lead does not have a phone number yet.');
+          return;
+        }
+        url = `tel:${phone}`;
+      } else {
+        if (!phone) {
+          Alert.alert('No phone found', 'This lead does not have a phone number yet.');
+          return;
+        }
+        url = `sms:${phone}`;
+      }
+
+      try {
+        const canOpen = await Linking.canOpenURL(url);
+        if (!canOpen) {
+          Alert.alert('Unavailable', 'No app is available to complete this action.');
+          return;
+        }
+        await Linking.openURL(url);
+      } catch (_error) {
+        Alert.alert('Unable to open', 'Please try again.');
+      }
+    },
+    [closeMenus]
+  );
+
+  const emptyStateTitle = activeTab === 'completed' ? 'No completed tasks yet' : 'No tasks in this section';
+  const emptyStateBody =
+    activeTab === 'completed'
+      ? 'Completed tasks from this session will appear here.'
+      : activeTab === 'today'
+        ? 'You are clear for today. Pull to refresh for new activity.'
+        : 'Nothing upcoming right now. Use snooze to move tasks here.';
 
   return (
-    <SafeAreaView style={ss.safeArea} edges={['top']}>
-      <ScrollView contentContainerStyle={ss.container} scrollEnabled={swipeCount === 0}>
-        {/* Hero */}
-        <View style={ss.hero}>
-          <View style={ss.heroTop}>
-            <Text style={ss.heroTitle}>Task Deck</Text>
-            <Text style={ss.heroDate}>{todayLabel}</Text>
+    <SafeAreaView style={ss.safeArea} edges={['left', 'right']}>
+      <View style={[ss.heroShell, { paddingTop: insets.top + spacing.sm }]}>
+        <View style={ss.heroGradientCanvas} pointerEvents="none">
+          {HERO_GRADIENT_BANDS.map((band) => (
+            <View
+              key={band.key}
+              style={[
+                ss.heroGradientBand,
+                { top: `${band.topPct}%`, height: `${band.heightPct}%`, backgroundColor: band.color }
+              ]}
+            />
+          ))}
+        </View>
+
+        <View style={ss.navRow}>
+          <View style={ss.navSpacer} />
+          <Text style={ss.navTitle}>Task Deck</Text>
+          <Pressable style={ss.bellButton} onPress={() => router.push('/notifications')}>
+            <Feather name="bell" size={18} color={ss.iconTone.color} />
+          </Pressable>
+        </View>
+
+        <Text style={ss.greetingText}>{greetingLabel()}</Text>
+
+        <View style={ss.profileRow}>
+          <View style={ss.profileAvatarFallback}>
+            <Text style={ss.profileAvatarInitials}>{userInitials}</Text>
           </View>
-          <View style={ss.kpiRow}>
-            <View style={ss.kpi}>
-              <Text style={ss.kpiValue}>{openCount}</Text>
-              <Text style={ss.kpiLabel}>Open</Text>
+
+          <View style={ss.profileMain}>
+            <Text style={ss.profileName} numberOfLines={1}>
+              {userDisplayName}
+            </Text>
+            <View style={ss.progressRow}>
+              <View style={ss.progressIconPill}>
+                <Feather name="zap" size={13} color={ss.iconTone.color} />
+              </View>
+              <View style={ss.progressContent}>
+                <Text style={ss.progressLabel}>
+                  {clearedCount}/{trackedTotal} cleared
+                </Text>
+                <View style={ss.progressTrack}>
+                  <View style={[ss.progressFill, { width: `${progressPct}%` }]} />
+                </View>
+              </View>
             </View>
-            <View style={ss.kpi}>
-              <Text style={[ss.kpiValue, { color: colors.warning }]}>{atRiskCount}</Text>
-              <Text style={ss.kpiLabel}>At-Risk</Text>
-            </View>
-            <View style={ss.kpi}>
-              <Text style={[ss.kpiValue, { color: '#FF7A7A' }]}>{staleCount}</Text>
-              <Text style={ss.kpiLabel}>Stale</Text>
-            </View>
+          </View>
+
+          <View style={ss.statusColumn}>
+            <Text style={ss.statusLine}>
+              {urgentCount} urgent · {atRiskCount} at risk
+            </Text>
+            <View style={ss.statusDivider} />
+            <Text style={ss.statusSubLine}>{waitingLabel}</Text>
           </View>
         </View>
 
-      {/* Loading */}
-      {tasks.isLoading && (
-        <View style={ss.msgCard}>
-          <Text style={ss.msgText}>Loading task deck…</Text>
+        <View style={ss.segmentControl}>
+          {DECK_TABS.map((tab) => {
+            const selected = activeTab === tab.key;
+            return (
+              <Pressable
+                key={tab.key}
+                style={[ss.segmentItem, selected ? ss.segmentItemActive : null]}
+                onPress={() => {
+                  closeMenus();
+                  setActiveTab(tab.key);
+                }}
+              >
+                <Text style={[ss.segmentText, selected ? ss.segmentTextActive : null]}>{tab.label}</Text>
+              </Pressable>
+            );
+          })}
         </View>
-      )}
+      </View>
 
-      {/* Error */}
-      {tasks.error && (
-        <View style={ss.msgCard}>
-          <Text style={ss.errText}>
-            Unable to load task deck.
-            {tasks.error instanceof Error ? ` (${tasks.error.message})` : ''}
-          </Text>
+      <ScrollView
+        style={ss.cardsScroll}
+        contentContainerStyle={ss.content}
+        scrollEnabled={swipeCount === 0}
+        onScrollBeginDrag={closeMenus}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => {
+              void onRefresh();
+            }}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
+      >
+        <View style={ss.cardsArea}>
+          {tasks.isLoading && activeTab !== 'completed' && visibleRows.length === 0 ? (
+            <View style={ss.messageCard}>
+              <Text style={ss.messageText}>Loading task deck...</Text>
+            </View>
+          ) : null}
+
+          {tasks.error ? (
+            <View style={ss.messageCard}>
+              <Text style={ss.errorText}>
+                Unable to load task deck.
+                {tasks.error instanceof Error ? ` (${tasks.error.message})` : ''}
+              </Text>
+            </View>
+          ) : null}
+
+          {visibleRows.map((row, index) => (
+            <TaskSwipeCard
+              key={`${row.task.id}:${row.completedAt ?? 'open'}`}
+              task={row.task}
+              index={index}
+              colors={colors}
+              mode={mode}
+              completedAt={row.completedAt}
+              contactMenuOpen={contactTaskId === row.task.id && !row.completedAt}
+              snoozeMenuOpen={snoozeTaskId === row.task.id && !row.completedAt}
+              onDone={handleDone}
+              onSnooze={handleSnooze}
+              onContactAction={handleContactAction}
+              onOpenLead={openLead}
+              onOpenContactMenu={(task) => {
+                setSnoozeTaskId(null);
+                setContactTaskId(task.id);
+              }}
+              onOpenSnoozeMenu={(task) => {
+                setContactTaskId(null);
+                setSnoozeTaskId(task.id);
+              }}
+              onCloseMenus={closeMenus}
+              onSwipeStart={() => setSwipeCount((count) => count + 1)}
+              onSwipeEnd={() => setSwipeCount((count) => Math.max(0, count - 1))}
+            />
+          ))}
+
+          {!tasks.isLoading && !tasks.error && visibleRows.length === 0 ? (
+            <View style={ss.emptyCard}>
+              <Feather name="inbox" size={28} color={ss.iconTone.color} style={{ marginBottom: 10 }} />
+              <Text style={ss.emptyTitle}>{emptyStateTitle}</Text>
+              <Text style={ss.emptyBody}>{emptyStateBody}</Text>
+            </View>
+          ) : null}
         </View>
-      )}
-
-      {/* Cards */}
-      {tasks.data?.map((task, i) => (
-        <TaskSwipeCard
-          key={task.id}
-          task={task}
-          index={i}
-          colors={colors}
-          mode={mode}
-          onDone={(id) => doneMutation.mutate(id)}
-          onSnooze={(id) => snoozeMutation.mutate(id)}
-          onOpenLead={openLead}
-          onSwipeStart={() => setSwipeCount((c) => c + 1)}
-          onSwipeEnd={() => setSwipeCount((c) => Math.max(0, c - 1))}
-        />
-      ))}
-
-      {/* Empty state */}
-        {!tasks.isLoading && !tasks.error && openCount === 0 && (
-          <View style={ss.empty}>
-            <Feather name="check-circle" size={36} color={colors.accent} style={{ marginBottom: 12 }} />
-            <Text style={ss.emptyTitle}>Deck Cleared</Text>
-            <Text style={ss.emptySub}>No open tasks right now. Check back after the next sync.</Text>
-          </View>
-        )}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-/* ────────────────────────────────────────────────────────────
-   Card Styles
-   ──────────────────────────────────────────────────────────── */
-
 function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
-  const cardBg = mode === 'dark' ? '#101A2E' : '#F7F9FC';
-  const cardBorder = mode === 'dark' ? '#213452' : '#D4DEEE';
+  const isDark = mode === 'dark';
+  const cardBackground = isDark ? '#24242B' : colors.surface;
+  const cardBorder = isDark ? 'rgba(118, 124, 145, 0.5)' : colors.border;
+  const textPrimary = isDark ? '#F0F2F8' : colors.text;
+  const textMuted = isDark ? 'rgba(240, 242, 248, 0.72)' : colors.textSecondary;
+  const iconTone = isDark ? '#E9EBF5' : colors.text;
 
   return StyleSheet.create({
     wrapper: {
-      marginBottom: 12,
-      borderRadius: 18,
+      marginBottom: 16,
+      borderRadius: 14
     },
     hintFull: {
       ...StyleSheet.absoluteFillObject,
-      borderRadius: 18,
+      borderRadius: 14,
       flexDirection: 'row',
       justifyContent: 'center',
-      alignItems: 'center',
+      alignItems: 'center'
     },
     hintDone: {
-      backgroundColor: colors.accent,
+      backgroundColor: colors.accent
     },
     hintSnooze: {
-      backgroundColor: colors.warning,
+      backgroundColor: colors.warning
     },
     hintLabel: {
       color: colors.white,
       fontWeight: '800',
       fontSize: 14,
-      letterSpacing: 0.3,
+      letterSpacing: 0.3
     },
     cardMotion: {
-      borderRadius: 18,
+      borderRadius: 14
     },
     card: {
-      borderRadius: 18,
+      borderRadius: 14,
       borderWidth: 1,
       borderColor: cardBorder,
-      backgroundColor: cardBg,
-      padding: 16,
-      shadowColor: '#040915',
-      shadowOpacity: 0.18,
+      backgroundColor: cardBackground,
+      paddingHorizontal: 14,
+      paddingVertical: 9,
+      overflow: 'visible',
+      shadowColor: '#030509',
+      shadowOpacity: 0.25,
       shadowRadius: 18,
-      shadowOffset: { width: 0, height: 4 },
-      elevation: 6,
+      shadowOffset: { width: 0, height: 8 },
+      elevation: 8
     },
     topRow: {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: 12,
+      marginBottom: 11
     },
-    pill: {
-      borderRadius: 999,
-      borderWidth: 1,
-      paddingHorizontal: 10,
-      paddingVertical: 4,
-      backgroundColor: colors.surfaceMuted,
-    },
-    pillText: {
-      fontSize: 11,
-      fontWeight: '700',
-    },
-    due: {
-      color: colors.textSecondary,
-      fontSize: 12,
-      fontWeight: '600',
-    },
-    identity: {
+    badgeRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      marginBottom: 8,
+      gap: spacing.sm
     },
-    avatar: {
-      width: 34,
-      height: 34,
-      borderRadius: 17,
-      backgroundColor: colors.cardMuted,
-      borderWidth: 1,
-      borderColor: colors.border,
+    stateBadge: {
+      flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
-      marginRight: spacing.sm,
+      gap: 6,
+      borderRadius: 8,
+      borderWidth: 0,
+      paddingHorizontal: 7,
+      paddingVertical: 3,
+      backgroundColor: isDark ? '#1F2127' : colors.surfaceMuted
     },
-    avatarLetter: {
-      color: colors.text,
-      fontWeight: '800',
-      fontSize: 14,
+    stateBadgeText: {
+      color: '#FFFFFF',
+      fontSize: 10,
+      fontWeight: '700',
+      letterSpacing: 0.25
     },
-    identityText: {
+    timeLabel: {
+      color: textMuted,
+      fontSize: 10
+    },
+    mailButton: {
+      width: 24,
+      height: 24,
+      borderRadius: 8,
+      borderWidth: 0,
+      backgroundColor: cardBackground,
+      alignItems: 'center',
+      justifyContent: 'center'
+    },
+    identityRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 9
+    },
+    identityPress: {
       flex: 1,
+      marginRight: spacing.sm
     },
     contactName: {
-      color: colors.text,
-      fontSize: 15,
+      color: textPrimary,
+      fontSize: 16,
       fontWeight: '700',
+      letterSpacing: 0.2,
+      marginBottom: 3
     },
-    taskType: {
-      color: colors.textSecondary,
+    wantsLine: {
+      color: textMuted,
+      fontSize: 12,
+      marginTop: 2,
+      lineHeight: 16
+    },
+    menuButton: {
+      width: 30,
+      height: 30,
+      borderRadius: 15,
+      borderWidth: 0,
+      backgroundColor: isDark ? '#1F2127' : colors.surface,
+      alignItems: 'center',
+      justifyContent: 'center'
+    },
+    actionStrip: {
+      borderRadius: 8,
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : colors.surfaceMuted,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      flexDirection: 'row',
+      alignItems: 'flex-start'
+    },
+    actionTextWrap: {
+      flex: 1
+    },
+    actionText: {
+      color: textPrimary,
+      fontSize: 12,
+      lineHeight: 18
+    },
+    footerRow: {
+      marginTop: 9,
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      alignItems: 'center'
+    },
+    snoozeAction: {
+      borderRadius: 999,
+      borderWidth: 0,
+      backgroundColor: isDark ? '#1F2127' : colors.surfaceMuted,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      flexDirection: 'row',
+      alignItems: 'center'
+    },
+    snoozeLabel: {
+      color: textMuted,
+      fontSize: 12
+    },
+    snoozeChevron: {
+      marginLeft: 2
+    },
+    donePill: {
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(109, 117, 140, 0.4)' : colors.border,
+      backgroundColor: isDark ? 'rgba(24, 28, 40, 0.95)' : colors.surfaceMuted,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      flexDirection: 'row',
+      alignItems: 'center'
+    },
+    donePillLabel: {
+      color: textMuted,
+      fontSize: 13
+    },
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(5, 8, 14, 0.45)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 24
+    },
+    modalBackdropPress: {
+      ...StyleSheet.absoluteFillObject
+    },
+    modalCard: {
+      width: '100%',
+      maxWidth: 280,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(111, 118, 142, 0.5)' : colors.border,
+      backgroundColor: isDark ? '#1C1E2A' : colors.surface,
+      paddingVertical: 8,
+      shadowColor: '#030406',
+      shadowOpacity: 0.35,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 12
+    },
+    modalTitle: {
+      color: textMuted,
       fontSize: 12,
       fontWeight: '600',
-      marginTop: 1,
-    },
-    summary: {
-      color: colors.textSecondary,
-      fontSize: 14,
-      lineHeight: 20,
-      marginBottom: 12,
-    },
-    actionsRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      alignItems: 'center',
-    },
-    btn: {
+      textTransform: 'uppercase',
+      letterSpacing: 0.6,
       paddingHorizontal: 14,
-      paddingVertical: 9,
-      borderRadius: 10,
+      paddingVertical: 8
     },
-    btnDone: {
-      backgroundColor: colors.accent,
+    modalItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 14,
+      paddingVertical: 12
     },
-    btnDoneLabel: {
-      color: colors.white,
-      fontWeight: '700',
-      fontSize: 13,
+    modalItemText: {
+      color: textPrimary,
+      fontSize: 15
     },
-    btnSnooze: {
-      backgroundColor: colors.cardMuted,
+    modalSeparator: {
+      height: 1,
+      backgroundColor: isDark ? 'rgba(120, 126, 148, 0.45)' : colors.border,
+      marginHorizontal: 10
     },
-    btnSnoozeLabel: {
-      color: colors.text,
-      fontWeight: '700',
-      fontSize: 13,
-    },
-    btnOpen: {
-      marginLeft: 'auto',
-      backgroundColor: colors.surfaceMuted,
-      borderWidth: 1,
-      borderColor: colors.border,
-    },
-    btnOpenLabel: {
-      color: colors.text,
-      fontWeight: '700',
-      fontSize: 13,
-    },
+    iconTone: {
+      color: iconTone
+    }
   });
 }
 
-/* ────────────────────────────────────────────────────────────
-   Screen Styles
-   ──────────────────────────────────────────────────────────── */
+function screenStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
+  const isDark = mode === 'dark';
+  const pageBg = isDark ? '#1A1A20' : colors.background;
+  const heroBg = isDark ? '#1A1A20' : colors.surface;
+  const heroBorder = isDark ? 'rgba(96, 103, 129, 0.35)' : colors.border;
+  const textPrimary = isDark ? '#F0F2F7' : colors.text;
+  const textMuted = isDark ? 'rgba(237, 239, 247, 0.74)' : colors.textSecondary;
+  const iconTone = isDark ? '#F0F2F7' : colors.text;
 
-function screenStyles(colors: TabThemeColors) {
   return StyleSheet.create({
-    container: {
-      paddingHorizontal: spacing.lg,
-      paddingTop: spacing.md,
-      paddingBottom: 120,
-    },
     safeArea: {
       flex: 1,
-      backgroundColor: colors.background,
+      backgroundColor: pageBg
     },
-    hero: {
-      borderRadius: 16,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.md,
+    content: {
+      paddingBottom: 124
+    },
+    cardsScroll: {
+      flex: 1
+    },
+    heroShell: {
       marginBottom: spacing.md,
+      backgroundColor: heroBg,
+      borderBottomWidth: 1,
+      borderBottomColor: heroBorder,
+      paddingHorizontal: spacing.lg,
+      paddingBottom: spacing.lg,
+      overflow: 'hidden'
     },
-    heroTop: {
+    heroGradientCanvas: {
+      position: 'absolute',
+      top: '-48%',
+      left: '-38%',
+      width: '200%',
+      height: '280%',
+      transform: [{ rotate: '-23deg' }]
+    },
+    heroGradientBand: {
+      position: 'absolute',
+      left: 0,
+      right: 0
+    },
+    navRow: {
       flexDirection: 'row',
-      justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: spacing.sm,
+      justifyContent: 'space-between'
     },
-    heroDate: {
-      color: colors.textSecondary,
-      fontSize: 12,
-      fontWeight: '600',
+    navSpacer: {
+      width: 34
     },
-    heroTitle: {
-      color: colors.text,
-      fontSize: 18,
-      fontWeight: '700',
-    },
-    kpiRow: {
-      flexDirection: 'row',
-      gap: spacing.md,
-      marginTop: 2,
-    },
-    kpi: {
+    navTitle: {
       flex: 1,
-      alignItems: 'flex-start',
-    },
-    kpiLabel: {
-      color: colors.textSecondary,
-      fontSize: 11,
+      textAlign: 'center',
+      color: textPrimary,
+      fontSize: 13,
       fontWeight: '600',
+      letterSpacing: 0.2
     },
-    kpiValue: {
-      color: colors.text,
-      fontSize: 18,
-      fontWeight: '700',
+    bellButton: {
+      width: 30,
+      height: 30,
+      borderRadius: 15,
+      alignItems: 'center',
+      justifyContent: 'center'
     },
-    msgCard: {
-      borderRadius: 18,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-      padding: 16,
-      marginBottom: 12,
+    greetingText: {
+      marginTop: spacing.md,
+      color: textPrimary,
+      fontSize: 15,
+      fontWeight: '500'
     },
-    msgText: {
-      color: colors.text,
+    profileRow: {
+      marginTop: spacing.md,
+      flexDirection: 'row',
+      alignItems: 'flex-start'
     },
-    errText: {
-      color: '#FF8A8A',
-    },
-    empty: {
+    profileAvatar: {
+      width: 44,
+      height: 44,
       borderRadius: 22,
       borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-      padding: 32,
+      borderColor: 'rgba(239, 241, 248, 0.2)'
+    },
+    profileAvatarFallback: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: 'rgba(239, 241, 248, 0.2)',
+      backgroundColor: 'rgba(237, 240, 247, 0.2)',
       alignItems: 'center',
+      justifyContent: 'center'
+    },
+    profileAvatarInitials: {
+      color: textPrimary,
+      fontSize: 16,
+      fontWeight: '700'
+    },
+    profileMain: {
+      flex: 1,
+      marginLeft: spacing.md,
+      marginRight: spacing.xs,
+      minWidth: 0
+    },
+    profileName: {
+      color: textPrimary,
+      fontSize: 15,
+      fontWeight: '700',
+      marginBottom: 4
+    },
+    progressIconPill: {
+      width: 22,
+      height: 22,
+      borderRadius: 7,
+      borderWidth: 0,
+      backgroundColor: 'rgba(20, 24, 38, 0.92)',
+      alignItems: 'center',
+      justifyContent: 'center'
+    },
+    progressLabel: {
+      color: textPrimary,
+      fontSize: 12
+    },
+    progressRow: {
+      marginTop: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8
+    },
+    progressContent: {
+      flex: 1
+    },
+    progressTrack: {
+      marginTop: 6,
+      flex: 1,
+      maxWidth: 132,
+      height: 1.5,
+      borderRadius: 1,
+      backgroundColor: isDark ? '#14161F' : colors.surfaceMuted,
+      overflow: 'hidden'
+    },
+    progressFill: {
+      height: '100%',
+      backgroundColor: isDark ? '#9EA5BF' : '#F0F2F7'
+    },
+    statusColumn: {
+      width: 112,
+      marginLeft: spacing.sm
+    },
+    statusLine: {
+      color: textMuted,
+      fontSize: 11,
+      lineHeight: 15
+    },
+    statusSubLine: {
+      color: textMuted,
+      fontSize: 10,
+      lineHeight: 14
+    },
+    statusDivider: {
+      height: 1,
+      marginVertical: 4,
+      backgroundColor: isDark ? 'rgba(126, 132, 156, 0.45)' : colors.border
+    },
+    segmentControl: {
+      marginTop: spacing.lg,
+      borderRadius: 9,
+      borderWidth: 0.5,
+      borderColor: isDark ? 'rgba(97, 104, 130, 0.52)' : colors.border,
+      backgroundColor: isDark ? 'rgba(18, 21, 33, 0)' : colors.surface,
+      padding: 1.5,
+      flexDirection: 'row'
+    },
+    segmentItem: {
+      flex: 1,
+      borderRadius: 7,
+      paddingVertical: 6,
+      alignItems: 'center'
+    },
+    segmentItemActive: {
+      backgroundColor: '#E7E7EB'
+    },
+    segmentText: {
+      color: textPrimary,
+      fontWeight: '500',
+      fontSize: 14
+    },
+    segmentTextActive: {
+      color: '#1C1F2E'
+    },
+    cardsArea: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md
+    },
+    messageCard: {
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(96, 103, 129, 0.45)' : colors.border,
+      backgroundColor: isDark ? 'rgba(33, 36, 50, 0.9)' : colors.surface,
+      padding: 16,
+      marginBottom: spacing.sm
+    },
+    messageText: {
+      color: textPrimary
+    },
+    errorText: {
+      color: '#FF9B9B'
+    },
+    emptyCard: {
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(96, 103, 129, 0.45)' : colors.border,
+      backgroundColor: isDark ? 'rgba(33, 36, 50, 0.9)' : colors.surface,
+      paddingVertical: 30,
+      paddingHorizontal: 24,
+      alignItems: 'center'
     },
     emptyTitle: {
-      color: colors.text,
-      fontSize: 18,
-      fontWeight: '800',
+      color: textPrimary,
+      fontSize: 17,
+      fontWeight: '700'
     },
-    emptySub: {
-      color: colors.textSecondary,
+    emptyBody: {
       marginTop: spacing.xs,
-      lineHeight: 20,
+      color: textMuted,
       textAlign: 'center',
+      lineHeight: 20
     },
+    iconTone: {
+      color: iconTone
+    }
   });
 }

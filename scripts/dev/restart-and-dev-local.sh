@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[dev:reset] Stopping docker services..."
+echo "[dev:restart] Stopping docker services (preserving volumes)..."
 pnpm infra:down >/dev/null 2>&1 || true
-pnpm infra:down:local:volumes >/dev/null 2>&1 || pnpm infra:down:local >/dev/null 2>&1 || true
+pnpm infra:down:local >/dev/null 2>&1 || true
 
-echo "[dev:reset] Stopping local dev processes..."
+echo "[dev:restart] Stopping local dev processes..."
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Stop known dev commands for this repository only.
@@ -23,5 +23,5 @@ for port in 3001 3002 8081; do
   fi
 done
 
-echo "[dev:reset] Starting fresh local stack..."
-pnpm dev:local
+echo "[dev:restart] Starting local stack without wiping DB..."
+MOBILE_FOREGROUND=1 pnpm dev:local

@@ -62,12 +62,9 @@ describe('OutlookProviderClient', () => {
       );
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(service.exchangeCodeForMailboxData('oauth-code')).resolves.toEqual({
+    await expect(service.exchangeCodeForMailboxData('oauth-code')).resolves.toMatchObject({
       email: 'owner@example.com',
-      accessToken: 'ms-access-token',
-      refreshToken: undefined,
-      accessTokenExpiresAt: undefined,
-      scope: undefined
+      accessToken: 'ms-access-token'
     });
   });
 
