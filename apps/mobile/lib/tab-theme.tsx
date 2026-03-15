@@ -30,9 +30,9 @@ const darkColors: TabThemeColors = {
   primary: '#2E6BFF',
   accent: '#17B890',
   warning: '#FFB84D',
-  border: '#213452',
-  tabBar: '#0E1729',
-  tabInactive: '#7E93B6',
+  border: '#3b3c3e',
+  tabBar: '#1A1A20',
+  tabInactive: '#737880',
   white: '#FFFFFF'
 };
 

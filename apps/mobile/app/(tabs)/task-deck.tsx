@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import {
   Alert,
-  ActivityIndicator,
   Animated,
   Easing,
   Image,
@@ -21,7 +20,7 @@ import {
   UIManager,
   View
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 
 import { apiGet, apiPost } from '../../lib/api';
@@ -70,6 +69,71 @@ const SNOOZE_OPTIONS: Array<{ key: SnoozeMode; label: string }> = [
   { key: 'tomorrow', label: 'Tomorrow' },
   { key: 'next_week', label: 'Next week' }
 ];
+
+const HERO_GRADIENT_STOPS = [
+  { stop: 0.174, color: '#1F2129' },
+  { stop: 0.3344, color: '#262940' },
+  { stop: 0.5678, color: '#23263D' },
+  { stop: 0.7808, color: '#1A1A20' }
+] as const;
+
+type RGB = { r: number; g: number; b: number };
+
+function hexToRgb(hex: string): RGB {
+  const value = hex.replace('#', '');
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16),
+    g: Number.parseInt(value.slice(2, 4), 16),
+    b: Number.parseInt(value.slice(4, 6), 16)
+  };
+}
+
+function rgbToHex(rgb: RGB): string {
+  const toHex = (value: number) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0');
+  return `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
+}
+
+function interpolateColor(from: RGB, to: RGB, t: number): RGB {
+  return {
+    r: from.r + (to.r - from.r) * t,
+    g: from.g + (to.g - from.g) * t,
+    b: from.b + (to.b - from.b) * t
+  };
+}
+
+function gradientColorAt(position: number): string {
+  if (position <= HERO_GRADIENT_STOPS[0].stop) {
+    return HERO_GRADIENT_STOPS[0].color;
+  }
+  if (position >= HERO_GRADIENT_STOPS[HERO_GRADIENT_STOPS.length - 1].stop) {
+    return HERO_GRADIENT_STOPS[HERO_GRADIENT_STOPS.length - 1].color;
+  }
+
+  for (let index = 0; index < HERO_GRADIENT_STOPS.length - 1; index += 1) {
+    const start = HERO_GRADIENT_STOPS[index];
+    const end = HERO_GRADIENT_STOPS[index + 1];
+    if (position >= start.stop && position <= end.stop) {
+      const range = end.stop - start.stop;
+      const t = range === 0 ? 0 : (position - start.stop) / range;
+      return rgbToHex(interpolateColor(hexToRgb(start.color), hexToRgb(end.color), t));
+    }
+  }
+
+  return HERO_GRADIENT_STOPS[0].color;
+}
+
+const HERO_GRADIENT_BANDS = Array.from({ length: 64 }, (_, index) => {
+  const from = index / 64;
+  const to = (index + 1) / 64;
+  const mid = (from + to) / 2;
+
+  return {
+    key: `hero-band-${index}`,
+    topPct: from * 100,
+    heightPct: (to - from) * 100 + 0.8,
+    color: gradientColorAt(mid)
+  };
+});
 
 function parseDate(value: string | undefined): Date | null {
   if (!value) {
@@ -499,8 +563,8 @@ function TaskSwipeCard({
           <View style={cs.topRow}>
             <View style={cs.badgeRow}>
               <View style={cs.stateBadge}>
-                <Feather name={chip.icon} size={13} color={chip.tint} />
-                <Text style={[cs.stateBadgeText, { color: chip.tint }]}>{chip.label}</Text>
+                <Feather name={chip.icon} size={13} color="#FFFFFF" />
+                <Text style={cs.stateBadgeText}>{chip.label}</Text>
               </View>
               <Text style={cs.timeLabel}>{activityLabel}</Text>
             </View>
@@ -511,7 +575,7 @@ function TaskSwipeCard({
                 onOpenLead(task);
               }}
             >
-              <Feather name={channelIcon} size={17} color={cs.iconTone.color} />
+              <Feather name={channelIcon} size={14} color={cs.iconTone.color} />
             </Pressable>
           </View>
 
@@ -553,7 +617,6 @@ function TaskSwipeCard({
           >
             <Feather name="zap" size={17} color={cs.iconTone.color} style={{ marginRight: 10 }} />
             <View style={cs.actionTextWrap}>
-              <Text style={cs.actionCaption}>Next action</Text>
               <Text style={cs.actionText} numberOfLines={2}>
                 {nextActionLine(task)}
               </Text>
@@ -574,9 +637,9 @@ function TaskSwipeCard({
                   onOpenSnoozeMenu(task);
                 }}
               >
-                <Feather name="clock" size={14} color={cs.iconTone.color} style={{ marginRight: 6 }} />
+                <Feather name="clock" size={14} color={cs.snoozeLabel.color} style={{ marginRight: 6 }} />
                 <Text style={cs.snoozeLabel}>Snooze</Text>
-                <Feather name="chevron-right" size={16} color={cs.iconTone.color} style={cs.snoozeChevron} />
+                <Feather name="chevron-right" size={16} color={cs.snoozeLabel.color} style={cs.snoozeChevron} />
               </Pressable>
             )}
           </View>
@@ -643,6 +706,7 @@ function TaskSwipeCard({
 export default function TaskDeckScreen(): JSX.Element {
   const { colors, mode } = useTabTheme();
   const ss = useMemo(() => screenStyles(colors, mode), [colors, mode]);
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const qc = useQueryClient();
   const currentUser = useCurrentUser();
@@ -839,7 +903,7 @@ export default function TaskDeckScreen(): JSX.Element {
 
   const waitingLabel =
     waitingSummary.count > 0
-      ? `${waitingSummary.count} lead${waitingSummary.count === 1 ? '' : 's'} waiting (${waitingSummary.maxDays} day${waitingSummary.maxDays === 1 ? '' : 's'})`
+      ? `${waitingSummary.count} lead${waitingSummary.count === 1 ? '' : 's'} waiting`
       : 'No leads waiting';
 
   const onRefresh = useCallback(async () => {
@@ -948,8 +1012,84 @@ export default function TaskDeckScreen(): JSX.Element {
         : 'Nothing upcoming right now. Use snooze to move tasks here.';
 
   return (
-    <SafeAreaView style={ss.safeArea} edges={['top']}>
+    <SafeAreaView style={ss.safeArea} edges={['left', 'right']}>
+      <View style={[ss.heroShell, { paddingTop: insets.top + spacing.sm }]}>
+        <View style={ss.heroGradientCanvas} pointerEvents="none">
+          {HERO_GRADIENT_BANDS.map((band) => (
+            <View
+              key={band.key}
+              style={[
+                ss.heroGradientBand,
+                { top: `${band.topPct}%`, height: `${band.heightPct}%`, backgroundColor: band.color }
+              ]}
+            />
+          ))}
+        </View>
+
+        <View style={ss.navRow}>
+          <View style={ss.navSpacer} />
+          <Text style={ss.navTitle}>Task Deck</Text>
+          <Pressable style={ss.bellButton} onPress={() => router.push('/notifications')}>
+            <Feather name="bell" size={18} color={ss.iconTone.color} />
+          </Pressable>
+        </View>
+
+        <Text style={ss.greetingText}>{greetingLabel()}</Text>
+
+        <View style={ss.profileRow}>
+          <View style={ss.profileAvatarFallback}>
+            <Text style={ss.profileAvatarInitials}>{userInitials}</Text>
+          </View>
+
+          <View style={ss.profileMain}>
+            <Text style={ss.profileName} numberOfLines={1}>
+              {userDisplayName}
+            </Text>
+            <View style={ss.progressRow}>
+              <View style={ss.progressIconPill}>
+                <Feather name="zap" size={13} color={ss.iconTone.color} />
+              </View>
+              <View style={ss.progressContent}>
+                <Text style={ss.progressLabel}>
+                  {clearedCount}/{trackedTotal} cleared
+                </Text>
+                <View style={ss.progressTrack}>
+                  <View style={[ss.progressFill, { width: `${progressPct}%` }]} />
+                </View>
+              </View>
+            </View>
+          </View>
+
+          <View style={ss.statusColumn}>
+            <Text style={ss.statusLine}>
+              {urgentCount} urgent · {atRiskCount} at risk
+            </Text>
+            <View style={ss.statusDivider} />
+            <Text style={ss.statusSubLine}>{waitingLabel}</Text>
+          </View>
+        </View>
+
+        <View style={ss.segmentControl}>
+          {DECK_TABS.map((tab) => {
+            const selected = activeTab === tab.key;
+            return (
+              <Pressable
+                key={tab.key}
+                style={[ss.segmentItem, selected ? ss.segmentItemActive : null]}
+                onPress={() => {
+                  closeMenus();
+                  setActiveTab(tab.key);
+                }}
+              >
+                <Text style={[ss.segmentText, selected ? ss.segmentTextActive : null]}>{tab.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
       <ScrollView
+        style={ss.cardsScroll}
         contentContainerStyle={ss.content}
         scrollEnabled={swipeCount === 0}
         onScrollBeginDrag={closeMenus}
@@ -965,81 +1105,7 @@ export default function TaskDeckScreen(): JSX.Element {
           />
         }
       >
-        <View style={ss.heroShell}>
-          <View style={ss.heroGlowLeft} />
-          <View style={ss.heroGlowRight} />
-
-          <View style={ss.navRow}>
-            <View style={ss.navSpacer} />
-            <Text style={ss.navTitle}>Task Deck</Text>
-            <Pressable style={ss.bellButton} onPress={() => router.push('/notifications')}>
-              <Feather name="bell" size={20} color={ss.iconTone.color} />
-            </Pressable>
-          </View>
-
-          <Text style={ss.greetingText}>{greetingLabel()}</Text>
-
-          <View style={ss.profileRow}>
-            {user?.imageUrl ? (
-              <Image source={{ uri: user.imageUrl }} style={ss.profileAvatar} />
-            ) : (
-              <View style={ss.profileAvatarFallback}>
-                <Text style={ss.profileAvatarInitials}>{userInitials}</Text>
-              </View>
-            )}
-
-            <View style={ss.profileMain}>
-              <Text style={ss.profileName} numberOfLines={1}>
-                {userDisplayName}
-              </Text>
-              <View style={ss.progressInfo}>
-                <View style={ss.progressIconPill}>
-                  <Feather name="zap" size={13} color={ss.iconTone.color} />
-                </View>
-                <Text style={ss.progressLabel}>
-                  {clearedCount}/{trackedTotal} cleared
-                </Text>
-              </View>
-              <View style={ss.progressTrack}>
-                <View style={[ss.progressFill, { width: `${progressPct}%` }]} />
-              </View>
-            </View>
-
-            <View style={ss.statusColumn}>
-              <Text style={ss.statusLine}>
-                {urgentCount} urgent · {atRiskCount} at risk
-              </Text>
-              <Text style={ss.statusLine}>{waitingLabel}</Text>
-            </View>
-          </View>
-
-          <View style={ss.segmentControl}>
-            {DECK_TABS.map((tab) => {
-              const selected = activeTab === tab.key;
-              return (
-                <Pressable
-                  key={tab.key}
-                  style={[ss.segmentItem, selected ? ss.segmentItemActive : null]}
-                  onPress={() => {
-                    closeMenus();
-                    setActiveTab(tab.key);
-                  }}
-                >
-                  <Text style={[ss.segmentText, selected ? ss.segmentTextActive : null]}>{tab.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-
         <View style={ss.cardsArea}>
-          {isRefreshing ? (
-            <View style={ss.refreshRow}>
-              <ActivityIndicator size="small" color={colors.primary} />
-              <Text style={ss.refreshText}>Refreshing latest activity...</Text>
-            </View>
-          ) : null}
-
           {tasks.isLoading && activeTab !== 'completed' && visibleRows.length === 0 ? (
             <View style={ss.messageCard}>
               <Text style={ss.messageText}>Loading task deck...</Text>
@@ -1098,7 +1164,7 @@ export default function TaskDeckScreen(): JSX.Element {
 
 function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
   const isDark = mode === 'dark';
-  const cardBackground = isDark ? 'rgba(35, 38, 53, 0.96)' : colors.surface;
+  const cardBackground = isDark ? '#24242B' : colors.surface;
   const cardBorder = isDark ? 'rgba(118, 124, 145, 0.5)' : colors.border;
   const textPrimary = isDark ? '#F0F2F8' : colors.text;
   const textMuted = isDark ? 'rgba(240, 242, 248, 0.72)' : colors.textSecondary;
@@ -1107,11 +1173,11 @@ function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
   return StyleSheet.create({
     wrapper: {
       marginBottom: 16,
-      borderRadius: 26
+      borderRadius: 14
     },
     hintFull: {
       ...StyleSheet.absoluteFillObject,
-      borderRadius: 26,
+      borderRadius: 14,
       flexDirection: 'row',
       justifyContent: 'center',
       alignItems: 'center'
@@ -1129,15 +1195,15 @@ function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
       letterSpacing: 0.3
     },
     cardMotion: {
-      borderRadius: 26
+      borderRadius: 14
     },
     card: {
-      borderRadius: 26,
+      borderRadius: 14,
       borderWidth: 1,
       borderColor: cardBorder,
       backgroundColor: cardBackground,
-      paddingHorizontal: 16,
-      paddingVertical: 14,
+      paddingHorizontal: 14,
+      paddingVertical: 9,
       overflow: 'visible',
       shadowColor: '#030509',
       shadowOpacity: 0.25,
@@ -1149,7 +1215,7 @@ function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: 12
+      marginBottom: 11
     },
     badgeRow: {
       flexDirection: 'row',
@@ -1160,36 +1226,35 @@ function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(110, 118, 140, 0.38)' : colors.border,
-      paddingHorizontal: 10,
-      paddingVertical: 5,
-      backgroundColor: isDark ? 'rgba(25, 29, 42, 0.9)' : colors.surfaceMuted
+      borderRadius: 8,
+      borderWidth: 0,
+      paddingHorizontal: 7,
+      paddingVertical: 3,
+      backgroundColor: isDark ? '#1F2127' : colors.surfaceMuted
     },
     stateBadgeText: {
+      color: '#FFFFFF',
       fontSize: 10,
       fontWeight: '700',
       letterSpacing: 0.25
     },
     timeLabel: {
       color: textMuted,
-      fontSize: 12
+      fontSize: 10
     },
     mailButton: {
-      width: 30,
-      height: 30,
-      borderRadius: 15,
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(110, 118, 140, 0.5)' : colors.border,
-      backgroundColor: isDark ? 'rgba(27, 30, 44, 0.95)' : colors.surfaceMuted,
+      width: 24,
+      height: 24,
+      borderRadius: 8,
+      borderWidth: 0,
+      backgroundColor: cardBackground,
       alignItems: 'center',
       justifyContent: 'center'
     },
     identityRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      marginBottom: 12
+      marginBottom: 9
     },
     identityPress: {
       flex: 1,
@@ -1197,76 +1262,71 @@ function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
     },
     contactName: {
       color: textPrimary,
-      fontSize: 20,
+      fontSize: 16,
       fontWeight: '700',
-      letterSpacing: 0.2
+      letterSpacing: 0.2,
+      marginBottom: 3
     },
     wantsLine: {
       color: textMuted,
-      fontSize: 14,
-      marginTop: 2
+      fontSize: 12,
+      marginTop: 2,
+      lineHeight: 16
     },
     menuButton: {
-      width: 34,
-      height: 34,
-      borderRadius: 17,
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(190, 196, 178, 0.55)' : colors.border,
-      backgroundColor: isDark ? 'rgba(33, 36, 49, 0.95)' : colors.surface,
+      width: 30,
+      height: 30,
+      borderRadius: 15,
+      borderWidth: 0,
+      backgroundColor: isDark ? '#1F2127' : colors.surface,
       alignItems: 'center',
       justifyContent: 'center'
     },
     actionStrip: {
-      borderRadius: 14,
+      borderRadius: 8,
       backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : colors.surfaceMuted,
-      paddingHorizontal: 12,
-      paddingVertical: 12,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
       flexDirection: 'row',
       alignItems: 'flex-start'
     },
     actionTextWrap: {
       flex: 1
     },
-    actionCaption: {
-      color: textMuted,
-      fontSize: 12,
-      marginBottom: 2
-    },
     actionText: {
       color: textPrimary,
-      fontSize: 15,
-      lineHeight: 22
+      fontSize: 12,
+      lineHeight: 18
     },
     footerRow: {
-      marginTop: 10,
+      marginTop: 9,
       flexDirection: 'row',
       justifyContent: 'flex-end',
       alignItems: 'center'
     },
     snoozeAction: {
       borderRadius: 999,
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(109, 117, 140, 0.4)' : colors.border,
-      backgroundColor: isDark ? 'rgba(24, 28, 40, 0.95)' : colors.surfaceMuted,
-      paddingHorizontal: 12,
-      paddingVertical: 7,
+      borderWidth: 0,
+      backgroundColor: isDark ? '#1F2127' : colors.surfaceMuted,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
       flexDirection: 'row',
       alignItems: 'center'
     },
     snoozeLabel: {
       color: textMuted,
-      fontSize: 13
+      fontSize: 12
     },
     snoozeChevron: {
       marginLeft: 2
     },
     donePill: {
-      borderRadius: 999,
+      borderRadius: 8,
       borderWidth: 1,
       borderColor: isDark ? 'rgba(109, 117, 140, 0.4)' : colors.border,
       backgroundColor: isDark ? 'rgba(24, 28, 40, 0.95)' : colors.surfaceMuted,
-      paddingHorizontal: 12,
-      paddingVertical: 7,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
       flexDirection: 'row',
       alignItems: 'center'
     },
@@ -1287,7 +1347,7 @@ function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
     modalCard: {
       width: '100%',
       maxWidth: 280,
-      borderRadius: 16,
+      borderRadius: 10,
       borderWidth: 1,
       borderColor: isDark ? 'rgba(111, 118, 142, 0.5)' : colors.border,
       backgroundColor: isDark ? '#1C1E2A' : colors.surface,
@@ -1330,8 +1390,8 @@ function cardStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
 
 function screenStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
   const isDark = mode === 'dark';
-  const pageBg = isDark ? '#111320' : colors.background;
-  const heroBg = isDark ? '#171A2C' : colors.surface;
+  const pageBg = isDark ? '#1A1A20' : colors.background;
+  const heroBg = isDark ? '#1A1A20' : colors.surface;
   const heroBorder = isDark ? 'rgba(96, 103, 129, 0.35)' : colors.border;
   const textPrimary = isDark ? '#F0F2F7' : colors.text;
   const textMuted = isDark ? 'rgba(237, 239, 247, 0.74)' : colors.textSecondary;
@@ -1345,33 +1405,30 @@ function screenStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
     content: {
       paddingBottom: 124
     },
+    cardsScroll: {
+      flex: 1
+    },
     heroShell: {
       marginBottom: spacing.md,
       backgroundColor: heroBg,
       borderBottomWidth: 1,
       borderBottomColor: heroBorder,
       paddingHorizontal: spacing.lg,
-      paddingTop: spacing.sm,
       paddingBottom: spacing.lg,
       overflow: 'hidden'
     },
-    heroGlowLeft: {
+    heroGradientCanvas: {
       position: 'absolute',
-      top: -88,
-      left: -38,
-      width: 256,
-      height: 256,
-      borderRadius: 128,
-      backgroundColor: 'rgba(77, 94, 184, 0.38)'
+      top: '-48%',
+      left: '-38%',
+      width: '200%',
+      height: '280%',
+      transform: [{ rotate: '-23deg' }]
     },
-    heroGlowRight: {
+    heroGradientBand: {
       position: 'absolute',
-      top: -110,
-      right: -78,
-      width: 300,
-      height: 300,
-      borderRadius: 150,
-      backgroundColor: 'rgba(54, 74, 171, 0.26)'
+      left: 0,
+      right: 0
     },
     navRow: {
       flexDirection: 'row',
@@ -1385,39 +1442,39 @@ function screenStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
       flex: 1,
       textAlign: 'center',
       color: textPrimary,
-      fontSize: 20,
+      fontSize: 13,
       fontWeight: '600',
       letterSpacing: 0.2
     },
     bellButton: {
-      width: 34,
-      height: 34,
-      borderRadius: 17,
+      width: 30,
+      height: 30,
+      borderRadius: 15,
       alignItems: 'center',
       justifyContent: 'center'
     },
     greetingText: {
       marginTop: spacing.md,
       color: textPrimary,
-      fontSize: 17,
+      fontSize: 15,
       fontWeight: '500'
     },
     profileRow: {
-      marginTop: spacing.sm,
+      marginTop: spacing.md,
       flexDirection: 'row',
-      alignItems: 'center'
+      alignItems: 'flex-start'
     },
     profileAvatar: {
-      width: 48,
-      height: 48,
-      borderRadius: 24,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
       borderWidth: 1,
       borderColor: 'rgba(239, 241, 248, 0.2)'
     },
     profileAvatarFallback: {
-      width: 48,
-      height: 48,
-      borderRadius: 24,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
       borderWidth: 1,
       borderColor: 'rgba(239, 241, 248, 0.2)',
       backgroundColor: 'rgba(237, 240, 247, 0.2)',
@@ -1432,67 +1489,82 @@ function screenStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
     profileMain: {
       flex: 1,
       marginLeft: spacing.md,
+      marginRight: spacing.xs,
       minWidth: 0
     },
     profileName: {
       color: textPrimary,
-      fontSize: 16,
-      fontWeight: '700'
-    },
-    progressInfo: {
-      marginTop: spacing.xs,
-      flexDirection: 'row',
-      alignItems: 'center'
+      fontSize: 15,
+      fontWeight: '700',
+      marginBottom: 4
     },
     progressIconPill: {
-      width: 26,
-      height: 26,
-      borderRadius: 9,
-      borderWidth: 1,
-      borderColor: 'rgba(99, 108, 133, 0.7)',
+      width: 22,
+      height: 22,
+      borderRadius: 7,
+      borderWidth: 0,
       backgroundColor: 'rgba(20, 24, 38, 0.92)',
       alignItems: 'center',
-      justifyContent: 'center',
-      marginRight: spacing.sm
+      justifyContent: 'center'
     },
     progressLabel: {
       color: textPrimary,
-      fontSize: 13
+      fontSize: 12
+    },
+    progressRow: {
+      marginTop: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8
+    },
+    progressContent: {
+      flex: 1
     },
     progressTrack: {
-      marginTop: spacing.xs,
-      width: '100%',
-      height: 6,
-      borderRadius: 999,
-      backgroundColor: isDark ? '#222739' : colors.surfaceMuted,
+      marginTop: 6,
+      flex: 1,
+      maxWidth: 132,
+      height: 1.5,
+      borderRadius: 1,
+      backgroundColor: isDark ? '#14161F' : colors.surfaceMuted,
       overflow: 'hidden'
     },
     progressFill: {
       height: '100%',
-      backgroundColor: '#F0F2F7'
+      backgroundColor: isDark ? '#9EA5BF' : '#F0F2F7'
     },
     statusColumn: {
-      width: 126,
+      width: 112,
       marginLeft: spacing.sm
     },
     statusLine: {
       color: textMuted,
-      fontSize: 12,
-      lineHeight: 19
+      fontSize: 11,
+      lineHeight: 15
+    },
+    statusSubLine: {
+      color: textMuted,
+      fontSize: 10,
+      lineHeight: 14
+    },
+    statusDivider: {
+      height: 1,
+      marginVertical: 4,
+      backgroundColor: isDark ? 'rgba(126, 132, 156, 0.45)' : colors.border
     },
     segmentControl: {
       marginTop: spacing.lg,
-      borderRadius: 14,
-      borderWidth: 1,
+      borderRadius: 9,
+      borderWidth: 0.5,
       borderColor: isDark ? 'rgba(97, 104, 130, 0.52)' : colors.border,
-      backgroundColor: isDark ? 'rgba(18, 21, 33, 0.68)' : colors.surface,
-      padding: 3,
+      backgroundColor: isDark ? 'rgba(18, 21, 33, 0)' : colors.surface,
+      padding: 1.5,
       flexDirection: 'row'
     },
     segmentItem: {
       flex: 1,
-      borderRadius: 11,
-      paddingVertical: 8,
+      borderRadius: 7,
+      paddingVertical: 6,
       alignItems: 'center'
     },
     segmentItemActive: {
@@ -1501,26 +1573,14 @@ function screenStyles(colors: TabThemeColors, mode: 'dark' | 'light') {
     segmentText: {
       color: textPrimary,
       fontWeight: '500',
-      fontSize: 17
+      fontSize: 14
     },
     segmentTextActive: {
       color: '#1C1F2E'
     },
     cardsArea: {
       paddingHorizontal: spacing.md,
-      paddingTop: spacing.sm
-    },
-    refreshRow: {
-      marginBottom: spacing.sm,
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: spacing.xs
-    },
-    refreshText: {
-      color: textMuted,
-      fontSize: 13,
-      fontWeight: '600'
+      paddingTop: spacing.md
     },
     messageCard: {
       borderRadius: 18,
